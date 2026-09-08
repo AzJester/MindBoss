@@ -11,5 +11,9 @@ binding = "DB"
 database_name = "mindboss-production"
 database_id = "748780d4-a462-4837-9a64-f13f2a3fe3e9"
 
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "mindboss-production-attachments"
+
 [vars]
 APP_ORIGIN = "https://mindboss.st-dba.com"

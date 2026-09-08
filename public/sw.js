@@ -1,4 +1,4 @@
-const CACHE = "mindboss-shell-v2";
+const CACHE = "mindboss-shell-v3";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 const DB_NAME = "mindboss-offline";
 
@@ -152,4 +152,73 @@ self.addEventListener("notificationclick", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data === "SKIP_WAITING") self.skipWaiting();
+});
+
+async function syncOutbox() {
+  const sessionResponse = await fetch("/api/v1/session", {
+    credentials: "same-origin",
+  });
+  if (!sessionResponse.ok) return;
+  const session = await sessionResponse.json();
+  if (!session.authenticated || !session.csrfToken) return;
+  const db = await openDb();
+  const queued = await new Promise((resolve, reject) => {
+    const request = db
+      .transaction("outbox", "readonly")
+      .objectStore("outbox")
+      .getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  for (const item of queued) {
+    const stored = item.input ? item : { input: item, files: [] };
+    const response = await fetch("/api/v1/entries", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": stored.input.id,
+        "x-csrf-token": session.csrfToken,
+      },
+      body: JSON.stringify(stored.input),
+    });
+    if (!response.ok) continue;
+    let result = await response.json();
+    let uploaded = true;
+    for (const attachment of stored.files || []) {
+      const form = new FormData();
+      form.append("file", attachment.file || attachment);
+      if (attachment.extractedText)
+        form.append("extractedText", attachment.extractedText);
+      const upload = await fetch(
+        `/api/v1/entries/${encodeURIComponent(result.entry.id)}/attachments`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "x-csrf-token": session.csrfToken },
+          body: form,
+        },
+      );
+      if (!upload.ok) {
+        uploaded = false;
+        break;
+      }
+      result = await upload.json();
+    }
+    if (!uploaded) continue;
+    await new Promise((resolve, reject) => {
+      const request = db
+        .transaction("outbox", "readwrite")
+        .objectStore("outbox")
+        .delete(item.id);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+  const clients = await self.clients.matchAll({ type: "window" });
+  clients.forEach((client) => client.postMessage({ type: "mindboss-synced" }));
+}
+
+self.addEventListener("sync", (event) => {
+  if (event.tag === "mindboss-outbox") event.waitUntil(syncOutbox());
 });

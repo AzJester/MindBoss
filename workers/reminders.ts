@@ -16,11 +16,47 @@ interface DueReminder {
   title: string;
   body: string;
   reminder_at: string;
+  recurrence_rule: "daily" | "weekdays" | "weekly" | "monthly" | null;
 }
 
 interface Subscription {
   id: string;
   subscription_ciphertext: string;
+}
+
+function nextOccurrence(
+  value: string,
+  rule: DueReminder["recurrence_rule"],
+): string | null {
+  if (!rule) return null;
+  const next = new Date(value);
+  if (rule === "daily" || rule === "weekdays")
+    next.setUTCDate(next.getUTCDate() + 1);
+  if (rule === "weekdays") {
+    while ([0, 6].includes(next.getUTCDay()))
+      next.setUTCDate(next.getUTCDate() + 1);
+  }
+  if (rule === "weekly") next.setUTCDate(next.getUTCDate() + 7);
+  if (rule === "monthly") next.setUTCMonth(next.getUTCMonth() + 1);
+  return next.toISOString();
+}
+
+async function isQuietTime(env: Env, userId: number): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "SELECT quiet_start, quiet_end FROM user_preferences WHERE user_id = ?",
+  )
+    .bind(userId)
+    .first<{ quiet_start: string | null; quiet_end: string | null }>();
+  if (!row?.quiet_start || !row.quiet_end) return false;
+  const current = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Phoenix",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date());
+  return row.quiet_start < row.quiet_end
+    ? current >= row.quiet_start && current < row.quiet_end
+    : current >= row.quiet_start || current < row.quiet_end;
 }
 
 function fromBase64url(value: string): Uint8Array {
@@ -70,7 +106,7 @@ async function sendDueReminders(
     .bind(staleClaim)
     .run();
   const due = await env.DB.prepare(
-    `SELECT id, user_id, title, body, reminder_at FROM entries
+    `SELECT id, user_id, title, body, reminder_at, recurrence_rule FROM entries
      WHERE kind = 'reminder' AND status = 'active' AND reminder_state = 'pending' AND reminder_at <= ?
      ORDER BY reminder_at LIMIT 100`,
   )
@@ -79,6 +115,7 @@ async function sendDueReminders(
   let sent = 0;
   let expired = 0;
   for (const reminder of due.results) {
+    if (await isQuietTime(env, reminder.user_id)) continue;
     const claim = await env.DB.prepare(
       "UPDATE entries SET reminder_state = 'sending', updated_at = ? WHERE id = ? AND reminder_state = 'pending'",
     )
@@ -128,13 +165,24 @@ async function sendDueReminders(
       }
     }
     if (delivered) {
+      const nextAt = nextOccurrence(
+        reminder.reminder_at,
+        reminder.recurrence_rule,
+      );
       await env.DB.batch([
         env.DB.prepare(
-          "UPDATE entries SET reminder_state = 'delivered', updated_at = ?, version = version + 1 WHERE id = ? AND reminder_state = 'sending'",
-        ).bind(now, reminder.id),
+          `UPDATE entries SET reminder_state = ?, reminder_at = COALESCE(?, reminder_at), updated_at = ?, version = version + 1
+           WHERE id = ? AND reminder_state = 'sending'`,
+        ).bind(nextAt ? "pending" : "delivered", nextAt, now, reminder.id),
         env.DB.prepare(
-          "INSERT INTO entry_events(id, entry_id, user_id, action, metadata_json, created_at) VALUES (?, ?, ?, 'reminder_delivered', '{}', ?)",
-        ).bind(crypto.randomUUID(), reminder.id, reminder.user_id, now),
+          "INSERT INTO entry_events(id, entry_id, user_id, action, metadata_json, created_at) VALUES (?, ?, ?, 'reminder_delivered', ?, ?)",
+        ).bind(
+          crypto.randomUUID(),
+          reminder.id,
+          reminder.user_id,
+          JSON.stringify({ recurrenceRule: reminder.recurrence_rule, nextAt }),
+          now,
+        ),
       ]);
     } else {
       await env.DB.prepare(

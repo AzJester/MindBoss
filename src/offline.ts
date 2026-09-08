@@ -55,6 +55,18 @@ export async function saveOutbox(payload: unknown): Promise<void> {
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
+  if ("serviceWorker" in navigator) {
+    const registration = await navigator.serviceWorker.ready.catch(() => null);
+    const sync =
+      registration && "sync" in registration
+        ? (
+            registration as ServiceWorkerRegistration & {
+              sync: { register(tag: string): Promise<void> };
+            }
+          ).sync
+        : null;
+    await sync?.register("mindboss-outbox").catch(() => undefined);
+  }
 }
 
 export async function drainOutbox(): Promise<Array<Record<string, unknown>>> {
@@ -68,6 +80,18 @@ export async function drainOutbox(): Promise<Array<Record<string, unknown>>> {
       store.clear();
       resolve(values);
     };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function outboxCount(): Promise<number> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const request = db
+      .transaction("outbox", "readonly")
+      .objectStore("outbox")
+      .count();
+    request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }

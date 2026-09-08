@@ -17,4 +17,11 @@ describe("reminder delivery safety", () => {
     expect(worker).toContain("statusCode === 404 || statusCode === 410");
     expect(worker).toContain("DELETE FROM push_subscriptions");
   });
+
+  it("honors quiet hours and advances recurring reminders", () => {
+    expect(worker).toContain("quiet_start, quiet_end");
+    expect(worker).toContain('rule === "weekdays"');
+    expect(worker).toContain('rule === "monthly"');
+    expect(worker).toContain('nextAt ? "pending" : "delivered"');
+  });
 });

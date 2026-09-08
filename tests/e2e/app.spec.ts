@@ -64,3 +64,60 @@ test("mobile controls remain usable", async ({ page, isMobile }) => {
     .boundingBox();
   expect(box?.height).toBeGreaterThanOrEqual(40);
 });
+
+test("creates a tag during capture and supports search syntax", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "Desktop workflow check");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByPlaceholder("Find or create a tag").fill("CLIENT-X");
+  await page.getByRole("button", { name: "Create" }).click();
+  await page.getByLabel(/Title/).fill("Client decision");
+  await page
+    .getByRole("textbox", { name: "Note" })
+    .fill("Keep this decision visible.");
+  await page.getByRole("button", { name: "Save to Mind Boss" }).click();
+  await page
+    .getByRole("textbox", { name: "Search entries" })
+    .fill("tag:client-x type:note");
+  await expect(page.getByText("Client decision")).toBeVisible();
+});
+
+test("shows Today and Review workflows", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Desktop workflow check");
+  const navigation = page.getByRole("navigation", {
+    name: "Mind Boss sections",
+  });
+  if (!(await navigation.isVisible()))
+    await page.getByRole("button", { name: "Open navigation" }).click();
+  await navigation.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Your day, already gathered" }),
+  ).toBeVisible();
+  await expect(page.getByText("Due today")).toBeVisible();
+  if (!(await navigation.isVisible()))
+    await page.getByRole("button", { name: "Open navigation" }).click();
+  await navigation.getByRole("button", { name: "Review", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Reconnect with what matters" }),
+  ).toBeVisible();
+});
+
+test("saves and reuses a capture template", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Desktop workflow check");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByLabel(/Title/).fill("Decision template");
+  await page
+    .getByRole("textbox", { name: "Note" })
+    .fill("Decision:\nReason:\nNext action:");
+  page.once("dialog", (dialog) => dialog.accept("Decision record"));
+  await page.getByRole("button", { name: "Save as template" }).click();
+  await expect(page.getByText("Capture template saved.")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page
+    .getByLabel("Start from a template")
+    .selectOption({ label: "Decision record" });
+  await expect(page.getByLabel(/Title/)).toHaveValue("Decision template");
+});

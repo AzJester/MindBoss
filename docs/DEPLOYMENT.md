@@ -43,6 +43,35 @@ npx wrangler secret put PUSH_ENCRYPTION_KEY --config wrangler.reminders.toml
 
 Use the same `PUSH_ENCRYPTION_KEY` for Pages and the reminder Worker. Do not reuse the session secret.
 
+### Optional SMS capture
+
+Buy or assign one SMS-capable Twilio number, then add the following Pages secrets:
+
+```bash
+npx wrangler pages secret put TWILIO_AUTH_TOKEN --project-name mindboss
+npx wrangler pages secret put SMS_ALLOWED_FROM --project-name mindboss
+npx wrangler pages secret put SMS_PHONE_NUMBER --project-name mindboss
+```
+
+`SMS_ALLOWED_FROM` must be the owner's mobile number in E.164 format, such as `+16025550123`. In Twilio, set the number's incoming-message webhook to:
+
+```text
+https://mindboss.st-dba.com/api/v1/sms/inbound
+```
+
+Use HTTP `POST`. Mind Boss validates `X-Twilio-Signature`, accepts only the exact allowed sender, and stores only a sender hash in its SMS audit record. It returns an empty TwiML response for normal captures so it does not send a paid confirmation message. `HELP` intentionally sends one reply.
+
+Supported commands:
+
+- `NOTE text` or ordinary text creates a note.
+- `IDEA text` creates a note titled Idea.
+- `LIST first item; second item` creates an ordered list.
+- `REMIND tomorrow 9am | text` or `REMIND 2026-09-10 09:30 | text` creates a reminder in Arizona time.
+- `#TAG` applies an existing tag. An existing tag name or trigger word can also be the first SMS keyword.
+- `HELP` returns a short command reference.
+
+SMS is optional and is the only workflow in Mind Boss that introduces a provider phone-number charge and per-message charges.
+
 ## 2. GitHub OAuth
 
 Create one GitHub OAuth App with:
@@ -98,7 +127,7 @@ Do not change nameservers. Wait for Cloudflare to show the custom domain as acti
 ## 6. Chrome clipper
 
 1. Run `npm run extension:package`.
-2. Unzip `artifacts/mindboss-clipper-0.1.0.zip` to a stable local folder.
+2. Unzip the versioned `artifacts/mindboss-clipper-*.zip` file to a stable local folder.
 3. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select that folder.
 4. In Mind Boss settings, generate a clipper token and paste it into the extension once.
 5. Verify toolbar, context-menu, `Ctrl+Shift+M`, selected-text, offline queue, and revoked-token behavior.
@@ -111,6 +140,7 @@ Do not call the release complete until all of these checks pass:
 - `GET https://mindboss.st-dba.com/api/v1/health` returns `ok: true`.
 - The custom domain certificate is valid and the OAuth callback completes.
 - An unauthorized GitHub account is rejected.
-- A note, list, reminder, nested tag, trigger, search, attachment, archive, trash restore, import, CSV export, JSON export, and full ZIP backup work in production.
+- A note, list, recurring reminder, nested tag, trigger, saved search, attachment OCR, Today view, Review queue, archive, trash restore, import, CSV export, JSON export, and full ZIP backup work in production.
 - Android installation, link/text/image/PDF sharing, offline retry, and Web Push work on a real phone.
 - The unpacked extension clips a normal page and clearly rejects `chrome://` and Chrome Web Store pages.
+- If SMS is enabled, a signed message from the allowed phone number is captured, an unapproved sender is rejected, and a repeated Twilio `MessageSid` creates no duplicate.

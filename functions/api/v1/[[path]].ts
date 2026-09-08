@@ -27,6 +27,12 @@ import {
   type AuthContext,
   type Env,
 } from "../_lib";
+import {
+  handleAi,
+  handlePreferences,
+  handleSavedSearches,
+  handleTemplates,
+} from "../features";
 
 type ImportRecord = EntryInput & {
   createdAt?: string;
@@ -78,6 +84,221 @@ function ftsQuery(value: string): string {
     .slice(0, 12)
     .map((part) => `"${part.replace(/"/g, '""')}"*`)
     .join(" AND ");
+}
+
+function phoenixDayBounds(reference = new Date()): {
+  start: string;
+  end: string;
+} {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Phoenix",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(reference);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value || 0);
+  const start = new Date(
+    Date.UTC(value("year"), value("month") - 1, value("day"), 7),
+  );
+  return {
+    start: start.toISOString(),
+    end: new Date(start.getTime() + 24 * 60 * 60_000).toISOString(),
+  };
+}
+
+function xml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function twiml(message = ""): Response {
+  return new Response(
+    `<?xml version="1.0" encoding="UTF-8"?><Response>${message ? `<Message>${xml(message)}</Message>` : ""}</Response>`,
+    { headers: { "content-type": "text/xml; charset=utf-8" } },
+  );
+}
+
+export async function validTwilioSignature(
+  token: string,
+  signature: string,
+  url: string,
+  form: FormData,
+): Promise<boolean> {
+  const values: Array<readonly [string, string]> = [];
+  form.forEach((value, key) => {
+    if (typeof value === "string") values.push([key, value] as const);
+  });
+  values.sort(([left], [right]) => left.localeCompare(right));
+  const payload = url + values.map(([key, value]) => `${key}${value}`).join("");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(token),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const bytes = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)),
+  );
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const expected = btoa(binary);
+  if (expected.length !== signature.length) return false;
+  let difference = 0;
+  for (let index = 0; index < expected.length; index += 1)
+    difference |= expected.charCodeAt(index) ^ signature.charCodeAt(index);
+  return difference === 0;
+}
+
+export function smsReminder(value: string): {
+  body: string;
+  reminderAt: string | null;
+} {
+  const match = value.match(
+    /^((?:today|tomorrow)(?:\s+at)?\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2})?)\s*(?:\||-|:)\s*(.+)$/is,
+  );
+  if (!match) return { body: value, reminderAt: null };
+  const when = match[1].trim().toLocaleLowerCase();
+  let date: Date;
+  if (when.startsWith("today") || when.startsWith("tomorrow")) {
+    const time = when.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+    if (!time) return { body: match[2].trim(), reminderAt: null };
+    let hour = Number(time[1]);
+    if (time[3] === "pm" && hour < 12) hour += 12;
+    if (time[3] === "am" && hour === 12) hour = 0;
+    const phoenix = phoenixDayBounds();
+    date = new Date(phoenix.start);
+    if (when.startsWith("tomorrow")) date.setUTCDate(date.getUTCDate() + 1);
+    date.setUTCHours(hour + 7, Number(time[2] || 0), 0, 0);
+  } else {
+    const parsed = when.includes("T") ? when : when.replace(" ", "T");
+    date = new Date(
+      `${parsed}${parsed.length > 10 ? ":00" : "T09:00:00"}-07:00`,
+    );
+  }
+  return {
+    body: match[2].trim(),
+    reminderAt: Number.isNaN(date.getTime()) ? null : date.toISOString(),
+  };
+}
+
+async function handleSmsInbound(env: Env, request: Request): Promise<Response> {
+  if (!env.TWILIO_AUTH_TOKEN || !env.SMS_ALLOWED_FROM)
+    throw new HttpError(
+      503,
+      "sms_not_configured",
+      "SMS capture is not configured.",
+    );
+  const form = await request.formData();
+  const signature = request.headers.get("x-twilio-signature") || "";
+  if (
+    !signature ||
+    !(await validTwilioSignature(
+      env.TWILIO_AUTH_TOKEN,
+      signature,
+      request.url,
+      form,
+    ))
+  )
+    throw new HttpError(
+      403,
+      "sms_signature_invalid",
+      "SMS signature is invalid.",
+    );
+  const from = String(form.get("From") || "").trim();
+  if (from !== env.SMS_ALLOWED_FROM.trim())
+    throw new HttpError(
+      403,
+      "sms_sender_not_allowed",
+      "SMS sender is not authorized.",
+    );
+  const messageSid = normalizeWhitespace(form.get("MessageSid"), 80);
+  const raw = normalizeWhitespace(form.get("Body"), 10_000);
+  if (!messageSid || !raw) return twiml();
+  const existing = await env.DB.prepare(
+    "SELECT message_sid FROM sms_messages WHERE message_sid = ?",
+  )
+    .bind(messageSid)
+    .first();
+  if (existing) return twiml();
+  const allTags = await listTags(env, Number(env.ALLOWED_GITHUB_USER_ID));
+  const command = raw.match(/^([\p{L}\p{N}_-]+)\b[:\s-]*(.*)$/isu);
+  const candidate = (command?.[1] || "").toLocaleUpperCase();
+  const builtIns = ["NOTE", "IDEA", "LIST", "REMIND", "HELP"];
+  const keywordTag = allTags.find(
+    (tag) =>
+      normalizeTagName(tag.name) === normalizeTagName(candidate) ||
+      tag.triggers.some(
+        (trigger) => normalizeTagName(trigger) === normalizeTagName(candidate),
+      ),
+  );
+  const keyword = builtIns.includes(candidate)
+    ? candidate
+    : keywordTag
+      ? `TAG:${keywordTag.name}`
+      : "NOTE";
+  const content =
+    builtIns.includes(candidate) || keywordTag ? command?.[2] || "" : raw;
+  if (keyword === "HELP")
+    return twiml(
+      "Mind Boss: NOTE text | LIST item; item | REMIND tomorrow 9am | text. Add #TAG anywhere.",
+    );
+  const requestedNames = [...raw.matchAll(/#([\p{L}\p{N}_-]+)/gu)].map(
+    (match) => normalizeTagName(match[1]),
+  );
+  const tagIds = allTags
+    .filter(
+      (tag) =>
+        tag.id === keywordTag?.id ||
+        requestedNames.includes(normalizeTagName(tag.name)),
+    )
+    .map((tag) => tag.id);
+  const cleanContent = content.replace(/(^|\s)#[\p{L}\p{N}_-]+/gu, " ").trim();
+  const reminder = keyword === "REMIND" ? smsReminder(cleanContent) : null;
+  const kind =
+    keyword === "LIST" ? "list" : keyword === "REMIND" ? "reminder" : "note";
+  const listItems =
+    kind === "list"
+      ? cleanContent
+          .split(/(?:\r?\n|;)/)
+          .map((text, position) => ({
+            id: crypto.randomUUID(),
+            text: text.replace(/^[-*\d.)\s]+/, "").trim(),
+            position,
+            completedAt: null,
+            dueAt: null,
+          }))
+          .filter((item) => item.text)
+      : [];
+  const entry = await createEntry(env, Number(env.ALLOWED_GITHUB_USER_ID), {
+    id: crypto.randomUUID(),
+    kind,
+    title: keyword === "IDEA" ? "Idea" : "",
+    body: reminder?.body || (kind === "list" ? "" : cleanContent),
+    source: "web",
+    sourceTitle: `SMS · ${keyword}`,
+    reminderAt: reminder?.reminderAt || null,
+    tagIds,
+    listItems,
+  });
+  await env.DB.prepare(
+    "INSERT INTO sms_messages(message_sid, user_id, entry_id, from_number_hash, keyword, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      messageSid,
+      Number(env.ALLOWED_GITHUB_USER_ID),
+      entry.id,
+      await sha256(from),
+      keyword,
+      nowIso(),
+    )
+    .run();
+  return twiml();
 }
 
 async function handleOAuthStart(env: Env, request: Request): Promise<Response> {
@@ -254,8 +475,8 @@ async function createEntry(
   const reminderState = input.reminderAt ? "pending" : null;
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
-      `INSERT INTO entries(id, user_id, kind, title, body, source, source_url, source_title, status, reminder_at, reminder_state, import_hash, deleted_at, created_at, updated_at, version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO entries(id, user_id, kind, title, body, source, source_url, source_title, status, reminder_at, reminder_state, recurrence_rule, review_at, import_hash, deleted_at, created_at, updated_at, version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     ).bind(
       input.id,
       userId,
@@ -268,6 +489,8 @@ async function createEntry(
       status,
       input.reminderAt || null,
       reminderState,
+      input.recurrenceRule || null,
+      input.reviewAt || null,
       options.importHash || null,
       status === "trashed" ? now : null,
       createdAt,
@@ -277,8 +500,15 @@ async function createEntry(
   for (const item of input.listItems || []) {
     statements.push(
       env.DB.prepare(
-        "INSERT INTO list_items(id, entry_id, text, position, completed_at) VALUES (?, ?, ?, ?, ?)",
-      ).bind(item.id, input.id, item.text, item.position, item.completedAt),
+        "INSERT INTO list_items(id, entry_id, text, position, completed_at, due_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(
+        item.id,
+        input.id,
+        item.text,
+        item.position,
+        item.completedAt,
+        item.dueAt,
+      ),
     );
   }
   for (const tagId of input.tagIds || []) {
@@ -341,6 +571,8 @@ async function listEntries(
     values.push(tagId);
   }
   if (params.get("pinned") === "true") where.push("e.pinned_at IS NOT NULL");
+  if (params.get("hasAttachments") === "true")
+    where.push("EXISTS (SELECT 1 FROM attachments a WHERE a.entry_id = e.id)");
   const reminderState = params.get("reminderState");
   if (
     reminderState &&
@@ -358,6 +590,39 @@ async function listEntries(
   if (toDate && !Number.isNaN(Date.parse(toDate))) {
     where.push("e.created_at <= ?");
     values.push(new Date(toDate).toISOString());
+  }
+  const due = params.get("due");
+  if (due) {
+    const bounds = phoenixDayBounds();
+    if (due === "today") {
+      where.push(
+        `((e.reminder_at >= ? AND e.reminder_at < ? AND e.reminder_state != 'completed') OR
+          EXISTS (SELECT 1 FROM list_items due_item WHERE due_item.entry_id = e.id AND due_item.completed_at IS NULL AND due_item.due_at >= ? AND due_item.due_at < ?))`,
+      );
+      values.push(bounds.start, bounds.end, bounds.start, bounds.end);
+    } else if (due === "overdue") {
+      where.push(
+        `((e.reminder_at < ? AND e.reminder_state != 'completed') OR
+          EXISTS (SELECT 1 FROM list_items due_item WHERE due_item.entry_id = e.id AND due_item.completed_at IS NULL AND due_item.due_at < ?))`,
+      );
+      values.push(bounds.start, bounds.start);
+    } else if (due === "upcoming") {
+      where.push(
+        `((e.reminder_at >= ? AND e.reminder_state != 'completed') OR
+          EXISTS (SELECT 1 FROM list_items due_item WHERE due_item.entry_id = e.id AND due_item.completed_at IS NULL AND due_item.due_at >= ?))`,
+      );
+      values.push(bounds.end, bounds.end);
+    }
+  }
+  const review = params.get("review");
+  if (review === "due") {
+    where.push("e.review_at IS NOT NULL AND e.review_at <= ?");
+    values.push(nowIso());
+  } else if (review === "stale") {
+    where.push(
+      "COALESCE(e.last_viewed_at, e.updated_at) <= ? AND e.status = 'active'",
+    );
+    values.push(new Date(Date.now() - 90 * 24 * 60 * 60_000).toISOString());
   }
   const direction = params.get("sort") === "oldest" ? "ASC" : "DESC";
   const rows = await env.DB.prepare(
@@ -398,6 +663,12 @@ async function updateEntry(
     reminderAt: Object.prototype.hasOwnProperty.call(body, "reminderAt")
       ? body.reminderAt
       : existing.reminderAt,
+    recurrenceRule: Object.prototype.hasOwnProperty.call(body, "recurrenceRule")
+      ? body.recurrenceRule
+      : existing.recurrenceRule,
+    reviewAt: Object.prototype.hasOwnProperty.call(body, "reviewAt")
+      ? body.reviewAt
+      : existing.reviewAt,
     tagIds: Array.isArray(body.tagIds)
       ? body.tagIds
       : existing.tags.map((tag) => tag.id),
@@ -436,7 +707,7 @@ async function updateEntry(
   const updated = nowIso();
   const result = await env.DB.prepare(
     `UPDATE entries SET kind = ?, title = ?, body = ?, source_url = ?, source_title = ?, status = ?, pinned_at = ?, reminder_at = ?, reminder_state = ?,
-     deleted_at = ?, updated_at = ?, version = version + 1 WHERE id = ? AND user_id = ? AND version = ?`,
+     recurrence_rule = ?, review_at = ?, deleted_at = ?, updated_at = ?, version = version + 1 WHERE id = ? AND user_id = ? AND version = ?`,
   )
     .bind(
       input.kind,
@@ -448,6 +719,8 @@ async function updateEntry(
       pinnedAt,
       input.reminderAt || null,
       reminderState,
+      input.recurrenceRule || null,
+      input.reviewAt || null,
       status === "trashed"
         ? existing.status === "trashed"
           ? existing.updatedAt
@@ -473,8 +746,15 @@ async function updateEntry(
     for (const item of input.listItems || [])
       itemStatements.push(
         env.DB.prepare(
-          "INSERT INTO list_items(id, entry_id, text, position, completed_at) VALUES (?, ?, ?, ?, ?)",
-        ).bind(item.id, entryId, item.text, item.position, item.completedAt),
+          "INSERT INTO list_items(id, entry_id, text, position, completed_at, due_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ).bind(
+          item.id,
+          entryId,
+          item.text,
+          item.position,
+          item.completedAt,
+          item.dueAt,
+        ),
       );
     await env.DB.batch(itemStatements);
   }
@@ -761,6 +1041,10 @@ async function handleAttachments(
     const file = form.get("file");
     if (!(file instanceof File))
       throw new HttpError(400, "file_required", "Choose an image or PDF.");
+    const extractedText = normalizeWhitespace(
+      form.get("extractedText"),
+      100_000,
+    );
     if (file.size > MAX_ATTACHMENT_BYTES)
       throw new HttpError(
         413,
@@ -789,7 +1073,7 @@ async function handleAttachments(
       customMetadata: { entryId },
     });
     await env.DB.prepare(
-      "INSERT INTO attachments(id, entry_id, r2_key, file_name, mime_type, size_bytes, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO attachments(id, entry_id, r2_key, file_name, mime_type, size_bytes, sha256, extracted_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
       .bind(
         id,
@@ -799,9 +1083,11 @@ async function handleAttachments(
         mime,
         file.size,
         contentHash,
+        extractedText,
         nowIso(),
       )
       .run();
+    await syncEntrySearch(env, entryId);
     await recordEvent(env, auth.user.id, entryId, "attachment_added", {
       attachmentId: id,
       mimeType: mime,
@@ -826,6 +1112,7 @@ async function handleAttachments(
     )
       .bind(attachmentId, entryId)
       .run();
+    await syncEntrySearch(env, entryId);
     await recordEvent(env, auth.user.id, entryId, "attachment_removed", {
       attachmentId,
     });
@@ -1143,6 +1430,8 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
     return handleOAuthCallback(env, request);
   if (parts[0] === "clips" && request.method === "POST")
     return addCors(env, request, await handleClip(env, request));
+  if (parts[0] === "sms" && parts[1] === "inbound" && request.method === "POST")
+    return handleSmsInbound(env, request);
 
   const auth = await loadAuth(env, request);
   if (parts[0] === "session" && request.method === "GET") {
@@ -1181,9 +1470,15 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
         entries: await listEntries(env, current.user.id, request),
       });
     if (request.method === "GET" && parts[1]) {
-      const entry = await loadEntry(env, current.user.id, parts[1]);
+      let entry = await loadEntry(env, current.user.id, parts[1]);
       if (!entry)
         throw new HttpError(404, "entry_not_found", "Entry not found.");
+      await env.DB.prepare(
+        "UPDATE entries SET last_viewed_at = ?, view_count = view_count + 1 WHERE id = ? AND user_id = ?",
+      )
+        .bind(nowIso(), parts[1], current.user.id)
+        .run();
+      entry = await loadEntry(env, current.user.id, parts[1]);
       return json({ entry });
     }
     requireMutationSecurity(env, request, current);
@@ -1232,6 +1527,22 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
   if (parts[0] === "search" && request.method === "GET")
     return json({ entries: await listEntries(env, current.user.id, request) });
   if (parts[0] === "tags") return handleTags(env, current, request, parts);
+  if (parts[0] === "saved-searches")
+    return handleSavedSearches(env, current, request, parts);
+  if (parts[0] === "templates")
+    return handleTemplates(env, current, request, parts);
+  if (parts[0] === "preferences")
+    return handlePreferences(env, current, request);
+  if (parts[0] === "ai") return handleAi(env, current, request);
+  if (parts[0] === "sms" && parts[1] === "status" && request.method === "GET")
+    return json({
+      configured: Boolean(
+        env.TWILIO_AUTH_TOKEN && env.SMS_ALLOWED_FROM && env.SMS_PHONE_NUMBER,
+      ),
+      phoneNumber: env.SMS_PHONE_NUMBER || "",
+      webhookUrl: `${env.APP_ORIGIN}/api/v1/sms/inbound`,
+      keywords: ["NOTE", "IDEA", "LIST", "REMIND", "HELP"],
+    });
   if (parts[0] === "push-subscriptions") {
     if (request.method === "GET") {
       const rows = await env.DB.prepare(

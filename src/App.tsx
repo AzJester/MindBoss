@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import Papa from "papaparse";
 import {
@@ -46,12 +47,17 @@ import {
   X,
 } from "lucide-react";
 import type {
+  CaptureTemplate,
   Entry,
+  EntryFilters,
   EntryInput,
   EntryStatus,
   ListItem,
+  RecurrenceRule,
+  SavedSearch,
   Session,
   Tag,
+  UserPreferences,
 } from "../shared/types";
 import {
   ApiError,
@@ -59,24 +65,32 @@ import {
   createClipToken,
   createEntry,
   deleteAttachment,
+  deleteTemplate,
   deleteTag,
   downloadFullBackup,
   exportUrl,
   getEntries,
   getEntry,
+  getPreferences,
+  getSavedSearches,
   getSession,
   getTags,
+  getTemplates,
   importEntries,
   isLocalMode,
   logout,
   saveTag,
+  savePreferences,
+  saveTemplate,
   subscribeToPush,
   updateEntry,
 } from "./api";
+import { prepareAttachment, type PreparedAttachment } from "./attachments";
 import {
   clearDraft,
   drainOutbox,
   loadDraft,
+  outboxCount,
   saveDraft,
   saveOutbox,
   takePendingShare,
@@ -88,9 +102,26 @@ import {
   parseReminder,
   tomorrowMorning,
 } from "./reminders";
+import {
+  AdvancedSearchPanel,
+  AiPanel,
+  OnboardingChecklist,
+  PreferencesCard,
+  ReviewQueue,
+  SmsCard,
+  TodaySummary,
+} from "./workflow-panels";
 
 type View =
-  "inbox" | "lists" | "reminders" | "archive" | "trash" | "tags" | "settings";
+  | "today"
+  | "inbox"
+  | "lists"
+  | "reminders"
+  | "review"
+  | "archive"
+  | "trash"
+  | "tags"
+  | "settings";
 
 interface Draft {
   id: string;
@@ -102,9 +133,11 @@ interface Draft {
   sourceTitle: string;
   reminderText: string;
   reminderAt: string | null;
+  recurrenceRule: RecurrenceRule | null;
+  reviewAt: string | null;
   tagIds: string[];
   listItems: ListItem[];
-  files: File[];
+  files: PreparedAttachment[];
   editing?: Entry;
 }
 
@@ -125,6 +158,8 @@ function freshDraft(kind: Entry["kind"] = "note"): Draft {
     sourceTitle: "",
     reminderText: "",
     reminderAt: null,
+    recurrenceRule: null,
+    reviewAt: null,
     tagIds: [],
     listItems: [],
     files: [],
@@ -142,6 +177,8 @@ function draftFromEntry(entry: Entry): Draft {
     sourceTitle: entry.sourceTitle || "",
     reminderText: entry.reminderAt ? formatDateTime(entry.reminderAt) : "",
     reminderAt: entry.reminderAt,
+    recurrenceRule: entry.recurrenceRule,
+    reviewAt: entry.reviewAt,
     tagIds: entry.tags.map((tag) => tag.id),
     listItems: entry.listItems.map((item) => ({ ...item })),
     files: [],
@@ -149,10 +186,52 @@ function draftFromEntry(entry: Entry): Draft {
   };
 }
 
+function parseSearchQuery(value: string, tags: Tag[]): EntryFilters {
+  const filters: EntryFilters = {};
+  const remaining: string[] = [];
+  for (const token of value.trim().split(/\s+/).filter(Boolean)) {
+    const [prefix, raw] = token.split(":", 2);
+    const key = prefix.toLocaleLowerCase();
+    const argument = raw?.toLocaleLowerCase();
+    if (key === "tag" && argument) {
+      filters.tag = tags.find(
+        (tag) => tag.name.toLocaleLowerCase() === argument.replace(/^#/, ""),
+      )?.id;
+    } else if (
+      key === "type" &&
+      ["note", "list", "reminder"].includes(argument)
+    ) {
+      filters.kind = argument as Entry["kind"];
+    } else if (key === "is" && argument === "pinned") filters.pinned = true;
+    else if (key === "has" && ["attachment", "attachments"].includes(argument))
+      filters.hasAttachments = true;
+    else if (key === "after" && raw) filters.from = raw;
+    else if (key === "before" && raw) filters.to = raw;
+    else if (
+      key === "due" &&
+      ["today", "overdue", "upcoming"].includes(argument)
+    )
+      filters.due = argument as EntryFilters["due"];
+    else remaining.push(token);
+  }
+  filters.q = remaining.join(" ") || undefined;
+  return filters;
+}
+
+function sourceLabel(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
 const NAV_ITEMS: Array<{ id: View; label: string; icon: typeof Inbox }> = [
+  { id: "today", label: "Today", icon: CheckCircle2 },
   { id: "inbox", label: "Inbox", icon: Inbox },
   { id: "lists", label: "Lists", icon: ListChecks },
   { id: "reminders", label: "Reminders", icon: Bell },
+  { id: "review", label: "Review", icon: Sparkles },
   { id: "archive", label: "Archive", icon: Archive },
   { id: "trash", label: "Trash", icon: Trash2 },
 ];
@@ -242,6 +321,14 @@ function EmptyState({ view, onAdd }: { view: View; onAdd: () => void }) {
       "Nothing is waiting",
       "Set a reminder in natural language and Mind Boss will bring it back.",
     ],
+    today: [
+      "Today is clear",
+      "Anything due or captured today will collect here automatically.",
+    ],
+    review: [
+      "Nothing needs review",
+      "Set a review date on an entry and Mind Boss will resurface it here.",
+    ],
     archive: [
       "Archive is clear",
       "Finished notes can rest here without disappearing.",
@@ -322,7 +409,7 @@ function EntryCard({
         {entry.sourceUrl && (
           <span className="source-link">
             <ExternalLink size={13} />{" "}
-            {entry.sourceTitle || new URL(entry.sourceUrl).hostname}
+            {entry.sourceTitle || sourceLabel(entry.sourceUrl)}
           </span>
         )}
       </button>
@@ -363,6 +450,14 @@ function EntryCard({
                 <Circle size={17} />
               )}
               <span>{item.text}</span>
+              {item.dueAt && !item.completedAt && (
+                <small className={isDue(item.dueAt) ? "due" : ""}>
+                  {new Date(item.dueAt).toLocaleDateString([], {
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </small>
+              )}
             </button>
           ))}
         </div>
@@ -373,6 +468,44 @@ function EntryCard({
         >
           <BellRing size={14} /> {formatDateTime(entry.reminderAt)}
           {entry.reminderState === "completed" && " · Done"}
+          {entry.recurrenceRule && ` · ${entry.recurrenceRule}`}
+        </div>
+      )}
+      {entry.reviewAt && (
+        <div className="review-chip">
+          <Sparkles size={13} /> Review {formatDateTime(entry.reviewAt)}
+        </div>
+      )}
+      {entry.attachments.length > 0 && (
+        <div className="card-attachments">
+          {entry.attachments.slice(0, 3).map((attachment) =>
+            attachment.mimeType.startsWith("image/") && attachment.url ? (
+              <a
+                key={attachment.id}
+                href={attachment.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <img
+                  src={attachment.url}
+                  alt={attachment.fileName}
+                  loading="lazy"
+                />
+              </a>
+            ) : (
+              <a
+                key={attachment.id}
+                href={attachment.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <FileText size={18} />
+                <span>{attachment.fileName}</span>
+              </a>
+            ),
+          )}
         </div>
       )}
       <div className="card-footer">
@@ -489,16 +622,24 @@ function EntryCard({
 function Composer({
   draft,
   tags,
+  templates,
   onClose,
   onSubmit,
+  onCreateTag,
+  onTemplateSaved,
 }: {
   draft: Draft;
   tags: Tag[];
+  templates: CaptureTemplate[];
   onClose: () => void;
   onSubmit: (draft: Draft) => Promise<boolean>;
+  onCreateTag: (name: string) => Promise<Tag>;
+  onTemplateSaved: (template: CaptureTemplate) => void;
 }) {
   const [value, setValue] = useState(draft);
   const [saving, setSaving] = useState(false);
+  const [tagSearch, setTagSearch] = useState("");
+  const [processingFiles, setProcessingFiles] = useState(false);
   const parsedReminder = useMemo(
     () =>
       value.kind === "reminder" ? parseReminder(value.reminderText) : null,
@@ -507,6 +648,18 @@ function Composer({
   useEffect(() => {
     saveDraft({ ...value, files: [] });
   }, [value]);
+  useEffect(() => {
+    if (value.sourceUrl) return;
+    const match = `${value.title}\n${value.body}`.match(
+      /https?:\/\/[^\s<>{}"']+/i,
+    );
+    if (!match) return;
+    setValue((current) => ({
+      ...current,
+      sourceUrl: match[0].replace(/[),.;]+$/, ""),
+      sourceTitle: current.sourceTitle || "Pasted link",
+    }));
+  }, [value.title, value.body, value.sourceUrl]);
   const update = <K extends keyof Draft>(key: K, next: Draft[K]) =>
     setValue((current) => ({ ...current, [key]: next }));
   const addListItem = () =>
@@ -517,6 +670,7 @@ function Composer({
         text: "",
         position: value.listItems.length,
         completedAt: null,
+        dueAt: null,
       },
     ]);
   const submit = async (event: FormEvent) => {
@@ -541,6 +695,55 @@ function Composer({
     value.title.trim() ||
     value.body.trim() ||
     value.listItems.some((item) => item.text.trim());
+  const applyTemplate = (templateId: string) => {
+    const template = templates.find((item) => item.id === templateId);
+    if (!template) return;
+    setValue((current) => ({
+      ...current,
+      kind: template.kind,
+      title: template.title,
+      body: template.body,
+      reminderText: template.reminderText,
+      tagIds: template.tagIds,
+      listItems: template.listItems.map((item, position) => ({
+        id: crypto.randomUUID(),
+        text: item.text,
+        dueAt: item.dueAt,
+        position,
+        completedAt: null,
+      })),
+    }));
+  };
+  const handleFiles = async (files: File[]) => {
+    setProcessingFiles(true);
+    try {
+      const prepared: PreparedAttachment[] = [];
+      for (const file of files.slice(0, 5))
+        prepared.push(await prepareAttachment(file));
+      update("files", prepared);
+    } finally {
+      setProcessingFiles(false);
+    }
+  };
+  const saveCurrentTemplate = async () => {
+    const name = prompt(
+      "Name this capture template:",
+      value.title || "New template",
+    );
+    if (!name?.trim()) return;
+    const template = await saveTemplate({
+      name: name.trim(),
+      kind: value.kind,
+      title: value.title,
+      body: value.body,
+      listItems: value.listItems
+        .filter((item) => item.text.trim())
+        .map((item) => ({ text: item.text, dueAt: item.dueAt })),
+      tagIds: value.tagIds,
+      reminderText: value.reminderText,
+    });
+    onTemplateSaved(template);
+  };
   return (
     <div
       className="dialog-backdrop"
@@ -549,7 +752,26 @@ function Composer({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <form className="composer" onSubmit={submit} aria-label="Capture entry">
+      <form
+        className="composer"
+        onSubmit={submit}
+        aria-label="Capture entry"
+        onKeyDown={(event: ReactKeyboardEvent<HTMLFormElement>) => {
+          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            event.currentTarget.requestSubmit();
+          }
+        }}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          const files = [...event.dataTransfer.files].filter(
+            (file) =>
+              file.type.startsWith("image/") || file.type === "application/pdf",
+          );
+          if (files.length) void handleFiles(files);
+        }}
+      >
         <header className="composer-header">
           <div>
             <span className="eyebrow">
@@ -570,6 +792,22 @@ function Composer({
             <X />
           </button>
         </header>
+        {!value.editing && templates.length > 0 && (
+          <label className="field template-picker">
+            <span>Start from a template</span>
+            <select
+              defaultValue=""
+              onChange={(event) => applyTemplate(event.target.value)}
+            >
+              <option value="">Blank capture</option>
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="kind-switch" role="tablist">
           {(["note", "list", "reminder"] as const).map((kind) => (
             <button
@@ -648,6 +886,29 @@ function Composer({
                     )
                   }
                   placeholder={index === 0 ? "First item" : "Next item"}
+                />
+                <input
+                  className="item-due-date"
+                  type="date"
+                  aria-label={`Due date for ${item.text || `item ${index + 1}`}`}
+                  value={item.dueAt?.slice(0, 10) || ""}
+                  onChange={(event) =>
+                    update(
+                      "listItems",
+                      value.listItems.map((current) =>
+                        current.id === item.id
+                          ? {
+                              ...current,
+                              dueAt: event.target.value
+                                ? new Date(
+                                    `${event.target.value}T17:00:00-07:00`,
+                                  ).toISOString()
+                                : null,
+                            }
+                          : current,
+                      ),
+                    )
+                  }
                 />
                 <button
                   type="button"
@@ -736,21 +997,60 @@ function Composer({
           </label>
         )}
         {value.kind === "reminder" && (
-          <label className="field reminder-field">
-            <span>When</span>
-            <input
-              value={value.reminderText}
-              onChange={(event) => update("reminderText", event.target.value)}
-              placeholder="Tomorrow at 9am"
-            />
-            {parsedReminder && (
-              <small className="parse-preview">
-                <Check size={14} /> {formatDateTime(parsedReminder)} Arizona
-                time
-              </small>
-            )}
-          </label>
+          <div className="reminder-options">
+            <label className="field reminder-field">
+              <span>When</span>
+              <input
+                value={value.reminderText}
+                onChange={(event) => update("reminderText", event.target.value)}
+                placeholder="Tomorrow at 9am"
+              />
+              {parsedReminder && (
+                <small className="parse-preview">
+                  <Check size={14} /> {formatDateTime(parsedReminder)} Arizona
+                  time
+                </small>
+              )}
+            </label>
+            <label className="field">
+              <span>Repeat</span>
+              <select
+                value={value.recurrenceRule || ""}
+                onChange={(event) =>
+                  update(
+                    "recurrenceRule",
+                    (event.target.value || null) as RecurrenceRule | null,
+                  )
+                }
+              >
+                <option value="">Does not repeat</option>
+                <option value="daily">Daily</option>
+                <option value="weekdays">Weekdays</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </label>
+          </div>
         )}
+        <label className="field review-date-field">
+          <span>
+            Resurface for review <small>optional</small>
+          </span>
+          <input
+            type="date"
+            value={value.reviewAt?.slice(0, 10) || ""}
+            onChange={(event) =>
+              update(
+                "reviewAt",
+                event.target.value
+                  ? new Date(
+                      `${event.target.value}T09:00:00-07:00`,
+                    ).toISOString()
+                  : null,
+              )
+            }
+          />
+        </label>
         {(value.sourceUrl || value.sourceTitle) && (
           <div className="source-preview">
             <Share2 size={17} />
@@ -762,43 +1062,108 @@ function Composer({
         )}
         <div className="tag-picker">
           <span className="field-label">Tags</span>
+          <div className="inline-tag-create">
+            <Hash size={15} />
+            <input
+              value={tagSearch}
+              onChange={(event) => setTagSearch(event.target.value)}
+              placeholder="Find or create a tag"
+            />
+            {tagSearch.trim() &&
+              !tags.some(
+                (tag) =>
+                  tag.name.toLocaleLowerCase() ===
+                  tagSearch.replace(/^#/, "").trim().toLocaleLowerCase(),
+              ) && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const tag = await onCreateTag(tagSearch);
+                    update("tagIds", [...new Set([...value.tagIds, tag.id])]);
+                    setTagSearch("");
+                  }}
+                >
+                  <Plus size={14} /> Create
+                </button>
+              )}
+          </div>
           <div>
-            {tags.map((tag) => (
-              <button
-                type="button"
-                key={tag.id}
-                className={value.tagIds.includes(tag.id) ? "selected" : ""}
-                style={{ "--tag-color": tag.color } as React.CSSProperties}
-                onClick={() =>
-                  update(
-                    "tagIds",
-                    value.tagIds.includes(tag.id)
-                      ? value.tagIds.filter((id) => id !== tag.id)
-                      : [...value.tagIds, tag.id],
-                  )
-                }
-              >
-                #{tag.name}
-              </button>
-            ))}
+            {tags
+              .filter((tag) =>
+                tag.name
+                  .toLocaleLowerCase()
+                  .includes(
+                    tagSearch.replace(/^#/, "").trim().toLocaleLowerCase(),
+                  ),
+              )
+              .map((tag) => (
+                <button
+                  type="button"
+                  key={tag.id}
+                  className={value.tagIds.includes(tag.id) ? "selected" : ""}
+                  style={{ "--tag-color": tag.color } as React.CSSProperties}
+                  onClick={() =>
+                    update(
+                      "tagIds",
+                      value.tagIds.includes(tag.id)
+                        ? value.tagIds.filter((id) => id !== tag.id)
+                        : [...value.tagIds, tag.id],
+                    )
+                  }
+                >
+                  #{tag.name}
+                </button>
+              ))}
           </div>
         </div>
         <label className="file-picker">
           <Paperclip size={17} />
           <span>
-            {value.files.length
-              ? `${value.files.length} file${value.files.length === 1 ? "" : "s"} ready`
-              : "Attach images or PDFs"}
+            {processingFiles
+              ? "Preparing files and indexing text…"
+              : value.files.length
+                ? `${value.files.length} file${value.files.length === 1 ? "" : "s"} ready`
+                : "Attach images or PDFs"}
           </span>
           <input
             type="file"
             accept="image/*,application/pdf"
             multiple
+            disabled={processingFiles}
             onChange={(event) =>
-              update("files", [...(event.target.files || [])].slice(0, 5))
+              void handleFiles([...(event.target.files || [])])
             }
           />
         </label>
+        {value.files.length > 0 && (
+          <div className="attachment-previews">
+            {value.files.map((attachment, index) => (
+              <article key={`${attachment.file.name}-${index}`}>
+                {attachment.file.type.startsWith("image/") ? (
+                  <img src={attachment.previewUrl} alt="" />
+                ) : (
+                  <FileText aria-hidden="true" />
+                )}
+                <div>
+                  <strong>{attachment.file.name}</strong>
+                  <small>{attachment.detail}</small>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Remove ${attachment.file.name}`}
+                  onClick={() =>
+                    update(
+                      "files",
+                      value.files.filter((_, itemIndex) => itemIndex !== index),
+                    )
+                  }
+                >
+                  <X size={14} />
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
         {value.editing?.attachments.length ? (
           <div className="existing-attachments">
             <span className="field-label">Saved attachments</span>
@@ -833,6 +1198,15 @@ function Composer({
             <Cloud size={14} /> Draft saved on this device
           </span>
           <div>
+            {!value.editing && hasContent && (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => void saveCurrentTemplate()}
+              >
+                Save as template
+              </button>
+            )}
             <button
               type="button"
               className="secondary-button"
@@ -840,13 +1214,17 @@ function Composer({
             >
               Cancel
             </button>
-            <button className="primary-button" disabled={!hasContent || saving}>
+            <button
+              className="primary-button"
+              disabled={!hasContent || saving || processingFiles}
+            >
               {saving
                 ? "Saving…"
                 : value.editing
                   ? "Save changes"
                   : "Save to Mind Boss"}
             </button>
+            <kbd className="submit-hint">Ctrl Enter</kbd>
           </div>
         </footer>
       </form>
@@ -1334,10 +1712,22 @@ function SettingsPanel({
   session,
   onRefresh,
   notify,
+  preferences,
+  onPreferencesChange,
+  entries,
+  tags,
+  templates,
+  onTemplatesChange,
 }: {
   session: Session;
   onRefresh: () => void;
   notify: (message: string) => void;
+  preferences: UserPreferences;
+  onPreferencesChange: (preferences: UserPreferences) => void;
+  entries: Entry[];
+  tags: Tag[];
+  templates: CaptureTemplate[];
+  onTemplatesChange: (templates: CaptureTemplate[]) => void;
 }) {
   const [clipToken, setClipToken] = useState("");
   const [backupBusy, setBackupBusy] = useState(false);
@@ -1371,6 +1761,25 @@ function SettingsPanel({
       await subscribeToPush(subscription);
     }
     notify("Push reminders are connected.");
+    const next = await savePreferences({
+      onboarding: { ...preferences.onboarding, notifications: true },
+    });
+    onPreferencesChange(next);
+  };
+  const attachmentBytes = entries.reduce(
+    (total, entry) =>
+      total + entry.attachments.reduce((size, item) => size + item.size, 0),
+    0,
+  );
+  const updatePreferences = async (next: UserPreferences) => {
+    onPreferencesChange(next);
+    try {
+      onPreferencesChange(await savePreferences(next));
+    } catch (error) {
+      notify(
+        error instanceof Error ? error.message : "Could not save settings.",
+      );
+    }
   };
   return (
     <section className="utility-panel">
@@ -1385,6 +1794,16 @@ function SettingsPanel({
         </div>
       </div>
       <div className="settings-stack">
+        <OnboardingChecklist
+          preferences={preferences}
+          hasTags={tags.length > 0}
+          hasEntries={entries.length > 0}
+          onChange={(next) => void updatePreferences(next)}
+        />
+        <PreferencesCard
+          preferences={preferences}
+          onChange={(next) => void updatePreferences(next)}
+        />
         <div className="settings-card">
           <div className="settings-icon">
             <BellRing />
@@ -1427,13 +1846,72 @@ function SettingsPanel({
             ) : (
               <button
                 className="secondary-button"
-                onClick={async () => setClipToken(await createClipToken())}
+                onClick={async () => {
+                  setClipToken(await createClipToken());
+                  await updatePreferences({
+                    ...preferences,
+                    onboarding: { ...preferences.onboarding, clipper: true },
+                  });
+                }}
               >
                 Create connection token
               </button>
             )}
           </div>
         </div>
+        <SmsCard notify={notify} />
+        {templates.length > 0 && (
+          <div className="settings-card">
+            <div className="settings-icon">
+              <Clipboard />
+            </div>
+            <div className="settings-copy">
+              <h3>Capture templates</h3>
+              <p>Reusable starting points available from every new capture.</p>
+              <div className="template-library">
+                {templates.map((template) => (
+                  <div key={template.id}>
+                    <span>
+                      <strong>{template.name}</strong>
+                      <small>{template.kind}</small>
+                    </span>
+                    <button
+                      className="icon-button danger-text"
+                      aria-label={`Delete ${template.name}`}
+                      onClick={async () => {
+                        await deleteTemplate(template.id);
+                        onTemplatesChange(
+                          templates.filter((item) => item.id !== template.id),
+                        );
+                        notify("Template deleted.");
+                      }}
+                    >
+                      <Trash2 />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="settings-card">
+          <div className="settings-icon">
+            <Paperclip />
+          </div>
+          <div className="settings-copy">
+            <h3>Storage</h3>
+            <p>
+              {entries.reduce(
+                (total, entry) => total + entry.attachments.length,
+                0,
+              )}{" "}
+              attachments use approximately{" "}
+              {(attachmentBytes / 1024 / 1024).toFixed(1)} MB in the entries
+              currently loaded.
+            </p>
+          </div>
+        </div>
+        <AiPanel entries={entries} notify={notify} />
         <Importer onComplete={onRefresh} notify={notify} />
         <div className="settings-card">
           <div className="settings-icon">
@@ -1516,9 +1994,11 @@ export default function App() {
     const requested = new URLSearchParams(location.search).get("view");
     return requested &&
       [
+        "today",
         "inbox",
         "lists",
         "reminders",
+        "review",
         "archive",
         "trash",
         "tags",
@@ -1530,11 +2010,24 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
   const [selectedTag, setSelectedTag] = useState("");
+  const [filters, setFilters] = useState<EntryFilters>({});
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [templates, setTemplates] = useState<CaptureTemplate[]>([]);
+  const [preferences, setPreferences] = useState<UserPreferences>({
+    onboarding: {},
+    defaultCaptureKind: "note",
+    quietStart: null,
+    quietEnd: null,
+    weeklyReviewDay: 0,
+  });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [syncing, setSyncing] = useState(false);
   const noticeTimer = useRef<number>();
 
   const notify = useCallback((message: string) => {
@@ -1549,6 +2042,7 @@ export default function App() {
     async (nextView = view, nextQuery = query) => {
       if (["tags", "settings"].includes(nextView)) return;
       setLoading(true);
+      setSyncing(true);
       try {
         const kind =
           nextView === "lists"
@@ -1558,22 +2052,25 @@ export default function App() {
               : undefined;
         setEntries(
           await getEntries({
-            q: nextQuery,
+            ...filters,
+            ...parseSearchQuery(nextQuery, tags),
             status: statusForView(nextView),
             kind,
             tag: selectedTag || undefined,
             sort,
           }),
         );
+        setLastSynced(new Date());
       } catch (error) {
         notify(
           error instanceof Error ? error.message : "Could not load entries.",
         );
       } finally {
         setLoading(false);
+        setSyncing(false);
       }
     },
-    [view, query, selectedTag, sort, notify],
+    [view, query, selectedTag, sort, filters, tags, notify],
   );
 
   useEffect(() => {
@@ -1581,8 +2078,18 @@ export default function App() {
       const nextSession = await getSession();
       setSession(nextSession);
       if (nextSession.authenticated) {
-        const [nextTags] = await Promise.all([getTags()]);
+        const [nextTags, nextSearches, nextTemplates, nextPreferences] =
+          await Promise.all([
+            getTags(),
+            getSavedSearches(),
+            getTemplates(),
+            getPreferences(),
+          ]);
         setTags(nextTags);
+        setSavedSearches(nextSearches);
+        setTemplates(nextTemplates);
+        setPreferences(nextPreferences);
+        setPendingCount(await outboxCount().catch(() => 0));
         const targetEntryId = new URLSearchParams(location.search).get("entry");
         if (targetEntryId) {
           const targetEntry = await getEntry(targetEntryId).catch(() => null);
@@ -1616,7 +2123,7 @@ export default function App() {
 
   useEffect(() => {
     if (session?.authenticated) refresh();
-  }, [session, view, selectedTag, sort]);
+  }, [session, view, selectedTag, sort, filters]);
   useEffect(() => {
     if (!session?.authenticated) return;
     const timer = window.setTimeout(() => refresh(view, query), 220);
@@ -1632,18 +2139,51 @@ export default function App() {
     history.replaceState({}, "", url);
   }, [entries, draft]);
   useEffect(() => {
+    if (!session?.authenticated) return;
+    const refreshWhenActive = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    const interval = window.setInterval(refreshWhenActive, 60_000);
+    window.addEventListener("focus", refreshWhenActive);
+    document.addEventListener("visibilitychange", refreshWhenActive);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenActive);
+      document.removeEventListener("visibilitychange", refreshWhenActive);
+    };
+  }, [session, refresh]);
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type !== "mindboss-synced") return;
+      void outboxCount().then(setPendingCount);
+      void refresh();
+    };
+    navigator.serviceWorker.addEventListener("message", handleMessage);
+    return () =>
+      navigator.serviceWorker.removeEventListener("message", handleMessage);
+  }, [refresh]);
+  useEffect(() => {
     const online = async () => {
       const queued = await drainOutbox().catch(() => []);
+      setPendingCount(queued.length);
+      setSyncing(queued.length > 0);
       let synchronized = 0;
       for (const item of queued) {
         try {
           const stored =
             "input" in item
-              ? (item as { input: EntryInput; files?: File[] })
+              ? (item as { input: EntryInput; files?: PreparedAttachment[] })
               : { input: item as unknown as EntryInput, files: [] };
           let saved = await createEntry(stored.input);
-          for (const file of stored.files || [])
-            saved = await addAttachment(saved.id, file);
+          for (const upload of stored.files || []) {
+            const prepared = upload as unknown as PreparedAttachment;
+            saved = await addAttachment(
+              saved.id,
+              prepared.file,
+              prepared.extractedText,
+            );
+          }
           synchronized += 1;
         } catch {
           await saveOutbox(item);
@@ -1655,6 +2195,8 @@ export default function App() {
         );
         refresh();
       }
+      setPendingCount(await outboxCount().catch(() => 0));
+      setSyncing(false);
     };
     if (navigator.onLine) void online();
     window.addEventListener("online", online);
@@ -1669,17 +2211,25 @@ export default function App() {
       body: share.text,
       sourceUrl: share.url,
       sourceTitle: share.title,
-      files: share.files,
+      files: share.files.map((file) => ({
+        file,
+        extractedText: "",
+        detail: "shared file ready",
+        previewUrl: URL.createObjectURL(file),
+      })),
     });
   const switchView = (next: View) => {
     setView(next);
     setSelectedTag("");
+    if (!["inbox", "lists", "reminders"].includes(next)) setFilters({});
     setMobileNav(false);
   };
-  const openNew = (kind: Entry["kind"] = "note") => {
+  const openNew = (kind?: Entry["kind"]) => {
     const saved = loadDraft<Omit<Draft, "files">>();
     setDraft(
-      saved && !saved.editing ? { ...saved, files: [] } : freshDraft(kind),
+      saved && !saved.editing
+        ? { ...saved, files: [] }
+        : freshDraft(kind || preferences.defaultCaptureKind),
     );
   };
 
@@ -1716,6 +2266,8 @@ export default function App() {
       sourceUrl: value.sourceUrl || null,
       sourceTitle: value.sourceTitle || null,
       reminderAt: value.reminderAt,
+      recurrenceRule: value.recurrenceRule,
+      reviewAt: value.reviewAt,
       tagIds: value.tagIds,
       listItems: value.listItems
         .filter((item) => item.text.trim())
@@ -1728,8 +2280,12 @@ export default function App() {
             version: value.editing.version,
           })
         : await createEntry(input);
-      for (const file of value.files)
-        saved = await addAttachment(saved.id, file);
+      for (const upload of value.files)
+        saved = await addAttachment(
+          saved.id,
+          upload.file,
+          upload.extractedText,
+        );
       setDraft(null);
       clearDraft();
       notify(value.editing ? "Entry updated." : "Captured.");
@@ -1743,6 +2299,7 @@ export default function App() {
           files: value.files,
           queuedAt: new Date().toISOString(),
         });
+        setPendingCount(await outboxCount().catch(() => 1));
         setDraft(null);
         clearDraft();
         notify("Saved offline. Mind Boss will sync when you reconnect.");
@@ -1775,8 +2332,12 @@ export default function App() {
     if (!conflict) return;
     try {
       let saved = await action();
-      for (const file of conflict.draft.files)
-        saved = await addAttachment(saved.id, file);
+      for (const upload of conflict.draft.files)
+        saved = await addAttachment(
+          saved.id,
+          upload.file,
+          upload.extractedText,
+        );
       setConflict(null);
       setDraft(null);
       clearDraft();
@@ -1815,25 +2376,49 @@ export default function App() {
   if (!session?.authenticated) return <SignIn />;
 
   const title =
-    view === "inbox"
-      ? "Everything worth keeping"
-      : view === "lists"
-        ? "Lists that move"
-        : view === "reminders"
-          ? "Bring it back on time"
-          : view === "archive"
-            ? "The quiet archive"
-            : view === "trash"
-              ? "Recently deleted"
-              : view === "tags"
-                ? "Tags"
-                : "Settings";
+    view === "today"
+      ? "Your day, already gathered"
+      : view === "inbox"
+        ? "Everything worth keeping"
+        : view === "lists"
+          ? "Lists that move"
+          : view === "reminders"
+            ? "Bring it back on time"
+            : view === "review"
+              ? "Reconnect with what matters"
+              : view === "archive"
+                ? "The quiet archive"
+                : view === "trash"
+                  ? "Recently deleted"
+                  : view === "tags"
+                    ? "Tags"
+                    : "Settings";
   const dueCount = entries.filter(
     (entry) =>
       entry.kind === "reminder" &&
       entry.reminderState !== "completed" &&
       isDue(entry.reminderAt),
   ).length;
+  const todayEntries =
+    view === "today"
+      ? entries.filter((entry) => {
+          const start = new Date();
+          start.setHours(0, 0, 0, 0);
+          const end = new Date(start);
+          end.setDate(end.getDate() + 1);
+          const created = new Date(entry.createdAt);
+          const due = [
+            entry.reminderState === "completed" ? null : entry.reminderAt,
+            ...entry.listItems
+              .filter((item) => !item.completedAt)
+              .map((item) => item.dueAt),
+          ].filter(Boolean) as string[];
+          return (
+            (created >= start && created < end) ||
+            due.some((value) => new Date(value) < end)
+          );
+        })
+      : entries;
 
   return (
     <div className="app-shell">
@@ -1898,7 +2483,14 @@ export default function App() {
             Settings
           </button>
           <div className="privacy-note">
-            <span className="status-dot" /> Private · Synced
+            <span className={`status-dot ${pendingCount ? "pending" : ""}`} />
+            {syncing
+              ? "Syncing…"
+              : pendingCount
+                ? `${pendingCount} waiting to sync`
+                : lastSynced
+                  ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                  : "Private · Synced"}
           </div>
         </div>
       </aside>
@@ -1924,7 +2516,7 @@ export default function App() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search thoughts, links, or dates…"
+              placeholder="Search, or try tag:work type:note…"
               aria-label="Search entries"
             />
             {query && (
@@ -1933,6 +2525,13 @@ export default function App() {
               </button>
             )}
           </div>
+          <button
+            className="icon-button sync-button"
+            aria-label="Refresh and synchronize"
+            onClick={() => void refresh()}
+          >
+            <RefreshCw className={syncing ? "spin" : ""} />
+          </button>
           <button
             className="avatar-button"
             onClick={() => switchView("settings")}
@@ -1949,6 +2548,12 @@ export default function App() {
               session={session}
               onRefresh={() => refresh("inbox")}
               notify={notify}
+              preferences={preferences}
+              onPreferencesChange={setPreferences}
+              entries={entries}
+              tags={tags}
+              templates={templates}
+              onTemplatesChange={setTemplates}
             />
           ) : (
             <>
@@ -1957,13 +2562,17 @@ export default function App() {
                   <span className="eyebrow">{view.toLocaleUpperCase()}</span>
                   <h1>{title}</h1>
                   <p>
-                    {view === "inbox"
-                      ? "A private feed for notes, links, lists, and the things your future self will need."
-                      : view === "reminders"
-                        ? "Due reminders stay visible here even when notifications are off."
-                        : view === "trash"
-                          ? "Items are permanently removed after 30 days."
-                          : "Keep the useful things close without adding more clutter."}
+                    {view === "today"
+                      ? "Overdue work, today’s reminders, and fresh captures in one place."
+                      : view === "review"
+                        ? "Scheduled reviews, older ideas, and notes from this day in years past."
+                        : view === "inbox"
+                          ? "A private feed for notes, links, lists, and the things your future self will need."
+                          : view === "reminders"
+                            ? "Due reminders stay visible here even when notifications are off."
+                            : view === "trash"
+                              ? "Items are permanently removed after 30 days."
+                              : "Keep the useful things close without adding more clutter."}
                   </p>
                 </div>
                 <div className="heading-actions">
@@ -1993,6 +2602,22 @@ export default function App() {
                   </button>
                 </div>
               </section>
+              {view === "today" && <TodaySummary entries={entries} />}
+              {["inbox", "lists", "reminders", "archive", "trash"].includes(
+                view,
+              ) && (
+                <AdvancedSearchPanel
+                  filters={{ ...filters, q: query || undefined }}
+                  tags={tags}
+                  savedSearches={savedSearches}
+                  onChange={(next) => {
+                    const { q: nextQuery, ...rest } = next;
+                    setQuery(nextQuery || "");
+                    setFilters(rest);
+                  }}
+                  onSavedSearchesChange={setSavedSearches}
+                />
+              )}
               {selectedTag && (
                 <div className="active-filter">
                   <TagIcon size={14} /> Showing #
@@ -2008,9 +2633,22 @@ export default function App() {
                     <span key={item} />
                   ))}
                 </div>
-              ) : entries.length ? (
+              ) : view === "review" ? (
+                <ReviewQueue
+                  entries={entries}
+                  onOpen={(entry) => setDraft(draftFromEntry(entry))}
+                  onReviewLater={(entry) =>
+                    void changeEntry(entry, {
+                      version: entry.version,
+                      reviewAt: new Date(
+                        Date.now() + 7 * 86_400_000,
+                      ).toISOString(),
+                    })
+                  }
+                />
+              ) : todayEntries.length ? (
                 <section className="entry-grid">
-                  {entries.map((entry) => (
+                  {todayEntries.map((entry) => (
                     <EntryCard
                       key={entry.id}
                       entry={entry}
@@ -2038,16 +2676,18 @@ export default function App() {
         </div>
       </main>
       <nav className="mobile-tabs" aria-label="Mobile navigation">
-        {NAV_ITEMS.slice(0, 3).map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            className={view === id ? "active" : ""}
-            onClick={() => switchView(id)}
-          >
-            <Icon />
-            <span>{label}</span>
-          </button>
-        ))}
+        {[NAV_ITEMS[0], NAV_ITEMS[1], NAV_ITEMS[3]].map(
+          ({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              className={view === id ? "active" : ""}
+              onClick={() => switchView(id)}
+            >
+              <Icon />
+              <span>{label}</span>
+            </button>
+          ),
+        )}
         <button
           className="mobile-add"
           onClick={() => openNew()}
@@ -2067,8 +2707,28 @@ export default function App() {
         <Composer
           draft={draft}
           tags={tags}
+          templates={templates}
           onClose={() => setDraft(null)}
           onSubmit={saveEntry}
+          onCreateTag={async (name) => {
+            const next = await saveTag({ name });
+            setTags(next);
+            const created = next.find(
+              (tag) =>
+                tag.name.toLocaleLowerCase() ===
+                name.replace(/^#/, "").trim().toLocaleLowerCase(),
+            );
+            if (!created) throw new Error("Could not create that tag.");
+            notify(`Created #${created.name}.`);
+            return created;
+          }}
+          onTemplateSaved={(template) => {
+            setTemplates((current) => [
+              template,
+              ...current.filter((item) => item.id !== template.id),
+            ]);
+            notify("Capture template saved.");
+          }}
         />
       )}
       {conflict && (

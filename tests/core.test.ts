@@ -21,20 +21,42 @@ describe("entry validation", () => {
       sourceUrl: "javascript:alert(1)",
       tagIds: ["one", "one", "two"],
       listItems: [
-        { id: "a", text: " Second ", position: 12 },
+        {
+          id: "a",
+          text: " Second ",
+          position: 12,
+          dueAt: "2026-09-10T16:00:00-07:00",
+        },
         { id: "b", text: "First", position: -1 },
       ],
+      recurrenceRule: "weekly",
+      reviewAt: "2026-09-20T16:00:00-07:00",
     });
     expect(result.title).toBe("Plan");
     expect(result.source).toBe("web");
     expect(result.sourceUrl).toBeNull();
     expect(result.tagIds).toEqual(["one", "two"]);
+    expect(result.recurrenceRule).toBe("weekly");
+    expect(result.reviewAt).toBe("2026-09-20T23:00:00.000Z");
+    expect(result.listItems?.[0].dueAt).toBe("2026-09-10T23:00:00.000Z");
     expect(result.listItems?.map((item) => [item.text, item.position])).toEqual(
       [
         ["Second", 0],
         ["First", 1],
       ],
     );
+  });
+
+  it("rejects unsupported recurrence rules", () => {
+    expect(() =>
+      validateEntryInput({
+        id: crypto.randomUUID(),
+        kind: "reminder",
+        body: "Stand up",
+        reminderAt: new Date().toISOString(),
+        recurrenceRule: "hourly",
+      }),
+    ).toThrow(/recurrence/i);
   });
 
   it("rejects empty entries and invalid identifiers", () => {

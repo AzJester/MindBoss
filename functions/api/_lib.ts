@@ -12,6 +12,9 @@ export interface Env {
   PUSH_ENCRYPTION_KEY: string;
   EXTENSION_ORIGIN?: string;
   VAPID_PUBLIC_KEY?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  SMS_ALLOWED_FROM?: string;
+  SMS_PHONE_NUMBER?: string;
 }
 
 export interface AuthContext {
@@ -317,6 +320,7 @@ export async function loadEntry(
     text: String(item.text),
     position: Number(item.position),
     completedAt: item.completed_at ? String(item.completed_at) : null,
+    dueAt: item.due_at ? String(item.due_at) : null,
   }));
   const tags = tagsResult.results.map((tag) =>
     mapTag(
@@ -334,6 +338,7 @@ export async function loadEntry(
     size: Number(item.size_bytes),
     createdAt: String(item.created_at),
     url: `/api/v1/entries/${entryId}/attachments/${String(item.id)}`,
+    extractedText: item.extracted_text ? String(item.extracted_text) : "",
   }));
   return {
     id: String(row.id),
@@ -347,6 +352,12 @@ export async function loadEntry(
     pinnedAt: row.pinned_at ? String(row.pinned_at) : null,
     reminderAt: row.reminder_at ? String(row.reminder_at) : null,
     reminderState: row.reminder_state as Entry["reminderState"],
+    recurrenceRule: row.recurrence_rule
+      ? (String(row.recurrence_rule) as Entry["recurrenceRule"])
+      : null,
+    reviewAt: row.review_at ? String(row.review_at) : null,
+    lastViewedAt: row.last_viewed_at ? String(row.last_viewed_at) : null,
+    viewCount: Number(row.view_count || 0),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     version: Number(row.version),
@@ -376,10 +387,15 @@ export async function syncEntrySearch(
   )
     .bind(entryId)
     .all<{ text: string }>();
+  const attachments = await env.DB.prepare(
+    "SELECT extracted_text FROM attachments WHERE entry_id = ? ORDER BY created_at",
+  )
+    .bind(entryId)
+    .all<{ extracted_text: string }>();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM entries_fts WHERE entry_id = ?").bind(entryId),
     env.DB.prepare(
-      "INSERT INTO entries_fts(entry_id, title, body, source_title, source_url, list_text) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO entries_fts(entry_id, title, body, source_title, source_url, list_text, attachment_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
     ).bind(
       entryId,
       String(row.title),
@@ -387,6 +403,7 @@ export async function syncEntrySearch(
       String(row.source_title || ""),
       String(row.source_url || ""),
       items.results.map((item) => item.text).join("\n"),
+      attachments.results.map((item) => item.extracted_text).join("\n"),
     ),
   ]);
 }

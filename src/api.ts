@@ -1,14 +1,21 @@
 import type {
+  CaptureTemplate,
   Entry,
+  EntryFilters,
   EntryInput,
   EntryStatus,
+  SavedSearch,
   Session,
   Tag,
+  UserPreferences,
 } from "../shared/types";
 import { strToU8, zipSync } from "fflate";
 
 const LOCAL_ENTRIES_KEY = "mindboss.local.entries";
 const LOCAL_TAGS_KEY = "mindboss.local.tags";
+const LOCAL_SEARCHES_KEY = "mindboss.local.saved-searches";
+const LOCAL_TEMPLATES_KEY = "mindboss.local.templates";
+const LOCAL_PREFERENCES_KEY = "mindboss.local.preferences";
 const CSRF_KEY = "mindboss.csrf";
 export const isLocalMode =
   import.meta.env.VITE_LOCAL_MODE === "true" ||
@@ -80,6 +87,10 @@ function seedLocal(): void {
       pinnedAt: new Date(now - 1_000).toISOString(),
       reminderAt: null,
       reminderState: null,
+      recurrenceRule: null,
+      reviewAt: null,
+      lastViewedAt: null,
+      viewCount: 0,
       createdAt: new Date(now - 18 * 60_000).toISOString(),
       updatedAt: new Date(now - 18 * 60_000).toISOString(),
       version: 1,
@@ -99,6 +110,10 @@ function seedLocal(): void {
       pinnedAt: null,
       reminderAt: null,
       reminderState: null,
+      recurrenceRule: null,
+      reviewAt: null,
+      lastViewedAt: null,
+      viewCount: 0,
       createdAt: new Date(now - 90 * 60_000).toISOString(),
       updatedAt: new Date(now - 90 * 60_000).toISOString(),
       version: 1,
@@ -108,18 +123,21 @@ function seedLocal(): void {
           text: "Install Mind Boss on Android",
           position: 0,
           completedAt: new Date(now - 30 * 60_000).toISOString(),
+          dueAt: null,
         },
         {
           id: crypto.randomUUID(),
           text: "Connect the Chrome clipper",
           position: 1,
           completedAt: null,
+          dueAt: null,
         },
         {
           id: crypto.randomUUID(),
           text: "Import MindChuk notes",
           position: 2,
           completedAt: null,
+          dueAt: null,
         },
       ],
       tags: [],
@@ -137,6 +155,10 @@ function seedLocal(): void {
       pinnedAt: null,
       reminderAt: new Date(now + 24 * 60 * 60_000).toISOString(),
       reminderState: "pending",
+      recurrenceRule: null,
+      reviewAt: null,
+      lastViewedAt: null,
+      viewCount: 0,
       createdAt: new Date(now - 5 * 60 * 60_000).toISOString(),
       updatedAt: new Date(now - 5 * 60 * 60_000).toISOString(),
       version: 1,
@@ -157,6 +179,10 @@ function seedLocal(): void {
       pinnedAt: null,
       reminderAt: null,
       reminderState: null,
+      recurrenceRule: null,
+      reviewAt: null,
+      lastViewedAt: null,
+      viewCount: 0,
       createdAt: new Date(now - 28 * 60 * 60_000).toISOString(),
       updatedAt: new Date(now - 28 * 60 * 60_000).toISOString(),
       version: 1,
@@ -222,17 +248,7 @@ export async function getSession(): Promise<Session> {
   return session;
 }
 
-export interface EntryQuery {
-  q?: string;
-  status?: EntryStatus;
-  kind?: Entry["kind"];
-  tag?: string;
-  sort?: "newest" | "oldest";
-  from?: string;
-  to?: string;
-  pinned?: "true";
-  reminderState?: "pending" | "delivered" | "completed";
-}
+export type EntryQuery = EntryFilters;
 
 export async function getEntries(query: EntryQuery = {}): Promise<Entry[]> {
   if (isLocalMode) {
@@ -244,6 +260,48 @@ export async function getEntries(query: EntryQuery = {}): Promise<Entry[]> {
       .filter(
         (entry) => !query.tag || entry.tags.some((tag) => tag.id === query.tag),
       )
+      .filter((entry) => !query.pinned || Boolean(entry.pinnedAt))
+      .filter((entry) => !query.hasAttachments || entry.attachments.length > 0)
+      .filter(
+        (entry) =>
+          !query.reminderState || entry.reminderState === query.reminderState,
+      )
+      .filter(
+        (entry) => !query.from || entry.createdAt >= `${query.from}T00:00:00`,
+      )
+      .filter(
+        (entry) => !query.to || entry.createdAt <= `${query.to}T23:59:59.999`,
+      )
+      .filter((entry) => {
+        if (!query.due) return true;
+        const dueValues = [
+          entry.reminderAt,
+          ...entry.listItems.map((item) => item.dueAt),
+        ].filter(Boolean) as string[];
+        const now = new Date();
+        const start = new Date(now);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(start);
+        end.setDate(end.getDate() + 1);
+        return dueValues.some((value) => {
+          const due = new Date(value);
+          if (query.due === "today") return due >= start && due < end;
+          if (query.due === "overdue") return due < start;
+          return due >= end;
+        });
+      })
+      .filter((entry) => {
+        if (!query.review) return true;
+        if (query.review === "due")
+          return Boolean(
+            entry.reviewAt && entry.reviewAt <= new Date().toISOString(),
+          );
+        return (
+          !entry.lastViewedAt ||
+          entry.lastViewedAt <
+            new Date(Date.now() - 30 * 86_400_000).toISOString()
+        );
+      })
       .filter(
         (entry) =>
           !text ||
@@ -333,6 +391,10 @@ export async function createEntry(input: EntryInput): Promise<Entry> {
         pinnedAt: null,
         reminderAt: input.reminderAt || null,
         reminderState: input.reminderAt ? "pending" : null,
+        recurrenceRule: input.recurrenceRule || null,
+        reviewAt: input.reviewAt || null,
+        lastViewedAt: null,
+        viewCount: 0,
         createdAt: now,
         updatedAt: now,
         version: 1,
@@ -465,6 +527,7 @@ export async function deleteTag(id: string): Promise<void> {
 export async function addAttachment(
   entryId: string,
   file: File,
+  extractedText = "",
 ): Promise<Entry> {
   if (isLocalMode) {
     const entries = readLocal<Entry[]>(LOCAL_ENTRIES_KEY, []);
@@ -477,18 +540,203 @@ export async function addAttachment(
       mimeType: file.type,
       size: file.size,
       createdAt: new Date().toISOString(),
+      extractedText,
     });
     writeLocal(LOCAL_ENTRIES_KEY, entries);
     return entry;
   }
   const form = new FormData();
   form.append("file", file);
+  if (extractedText) form.append("extractedText", extractedText);
   return (
     await remote<{ entry: Entry }>(`/entries/${entryId}/attachments`, {
       method: "POST",
       body: form,
     })
   ).entry;
+}
+
+export async function getSavedSearches(): Promise<SavedSearch[]> {
+  if (isLocalMode) return readLocal<SavedSearch[]>(LOCAL_SEARCHES_KEY, []);
+  return (await remote<{ savedSearches: SavedSearch[] }>("/saved-searches"))
+    .savedSearches;
+}
+
+export async function saveSavedSearch(
+  name: string,
+  query: EntryFilters,
+  id?: string,
+): Promise<SavedSearch> {
+  if (isLocalMode) {
+    const searches = readLocal<SavedSearch[]>(LOCAL_SEARCHES_KEY, []);
+    const index = id ? searches.findIndex((item) => item.id === id) : -1;
+    const now = new Date().toISOString();
+    const saved: SavedSearch = {
+      id: id || crypto.randomUUID(),
+      name: name.trim(),
+      query,
+      createdAt: index >= 0 ? searches[index].createdAt : now,
+      updatedAt: now,
+    };
+    if (index >= 0) searches[index] = saved;
+    else searches.unshift(saved);
+    writeLocal(LOCAL_SEARCHES_KEY, searches);
+    return saved;
+  }
+  return (
+    await remote<{ savedSearch: SavedSearch }>(
+      id ? `/saved-searches/${id}` : "/saved-searches",
+      {
+        method: id ? "PATCH" : "POST",
+        body: JSON.stringify({ name, query }),
+      },
+    )
+  ).savedSearch;
+}
+
+export async function deleteSavedSearch(id: string): Promise<void> {
+  if (isLocalMode) {
+    writeLocal(
+      LOCAL_SEARCHES_KEY,
+      readLocal<SavedSearch[]>(LOCAL_SEARCHES_KEY, []).filter(
+        (item) => item.id !== id,
+      ),
+    );
+    return;
+  }
+  await remote(`/saved-searches/${id}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function getTemplates(): Promise<CaptureTemplate[]> {
+  if (isLocalMode) return readLocal<CaptureTemplate[]>(LOCAL_TEMPLATES_KEY, []);
+  return (await remote<{ templates: CaptureTemplate[] }>("/templates"))
+    .templates;
+}
+
+export async function saveTemplate(
+  input: Omit<CaptureTemplate, "id" | "createdAt" | "updatedAt"> & {
+    id?: string;
+  },
+): Promise<CaptureTemplate> {
+  if (isLocalMode) {
+    const templates = readLocal<CaptureTemplate[]>(LOCAL_TEMPLATES_KEY, []);
+    const index = input.id
+      ? templates.findIndex((item) => item.id === input.id)
+      : -1;
+    const now = new Date().toISOString();
+    const saved: CaptureTemplate = {
+      ...input,
+      id: input.id || crypto.randomUUID(),
+      createdAt: index >= 0 ? templates[index].createdAt : now,
+      updatedAt: now,
+    };
+    if (index >= 0) templates[index] = saved;
+    else templates.unshift(saved);
+    writeLocal(LOCAL_TEMPLATES_KEY, templates);
+    return saved;
+  }
+  return (
+    await remote<{ template: CaptureTemplate }>(
+      input.id ? `/templates/${input.id}` : "/templates",
+      {
+        method: input.id ? "PATCH" : "POST",
+        body: JSON.stringify(input),
+      },
+    )
+  ).template;
+}
+
+export async function deleteTemplate(id: string): Promise<void> {
+  if (isLocalMode) {
+    writeLocal(
+      LOCAL_TEMPLATES_KEY,
+      readLocal<CaptureTemplate[]>(LOCAL_TEMPLATES_KEY, []).filter(
+        (item) => item.id !== id,
+      ),
+    );
+    return;
+  }
+  await remote(`/templates/${id}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
+  });
+}
+
+const DEFAULT_PREFERENCES: UserPreferences = {
+  onboarding: {},
+  defaultCaptureKind: "note",
+  quietStart: null,
+  quietEnd: null,
+  weeklyReviewDay: 0,
+};
+
+export async function getPreferences(): Promise<UserPreferences> {
+  if (isLocalMode)
+    return readLocal<UserPreferences>(
+      LOCAL_PREFERENCES_KEY,
+      DEFAULT_PREFERENCES,
+    );
+  return (await remote<{ preferences: UserPreferences }>("/preferences"))
+    .preferences;
+}
+
+export async function savePreferences(
+  changes: Partial<UserPreferences>,
+): Promise<UserPreferences> {
+  if (isLocalMode) {
+    const next = { ...(await getPreferences()), ...changes };
+    writeLocal(LOCAL_PREFERENCES_KEY, next);
+    return next;
+  }
+  return (
+    await remote<{ preferences: UserPreferences }>("/preferences", {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    })
+  ).preferences;
+}
+
+export async function runAi(input: {
+  apiKey: string;
+  model: string;
+  action:
+    | "summarize"
+    | "ask"
+    | "suggest_tags"
+    | "extract_actions"
+    | "weekly_review"
+    | "find_duplicates";
+  request?: string;
+  entries: Array<{ title: string; body: string; tags: string[] }>;
+}): Promise<{ text: string; model: string; inputChars: number }> {
+  if (isLocalMode)
+    throw new ApiError(
+      "ai_remote_required",
+      "AI tools are available in the deployed private app.",
+      400,
+    );
+  return remote("/ai", { method: "POST", body: JSON.stringify(input) });
+}
+
+export interface SmsStatus {
+  configured: boolean;
+  phoneNumber: string;
+  webhookUrl: string;
+  keywords: string[];
+}
+
+export async function getSmsStatus(): Promise<SmsStatus> {
+  if (isLocalMode)
+    return {
+      configured: false,
+      phoneNumber: "",
+      webhookUrl: `${location.origin}/api/v1/sms/inbound`,
+      keywords: ["NOTE", "IDEA", "LIST", "REMIND", "HELP"],
+    };
+  return remote("/sms/status");
 }
 
 export async function deleteAttachment(

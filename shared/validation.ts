@@ -1,4 +1,9 @@
-import type { CaptureSource, EntryInput, EntryKind } from "./types";
+import type {
+  CaptureSource,
+  EntryInput,
+  EntryKind,
+  RecurrenceRule,
+} from "./types";
 
 export const ENTRY_KINDS: EntryKind[] = ["note", "list", "reminder"];
 export const CAPTURE_SOURCES: CaptureSource[] = [
@@ -11,6 +16,12 @@ export const MAX_TEXT_LENGTH = 100_000;
 export const MAX_TITLE_LENGTH = 500;
 export const MAX_ATTACHMENTS = 5;
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const RECURRENCE_RULES: RecurrenceRule[] = [
+  "daily",
+  "weekdays",
+  "weekly",
+  "monthly",
+];
 
 export function normalizeWhitespace(
   value: unknown,
@@ -65,6 +76,10 @@ export function validateEntryInput(value: unknown): EntryInput {
           position: index,
           completedAt:
             typeof item.completedAt === "string" ? item.completedAt : null,
+          dueAt:
+            item.dueAt && !Number.isNaN(Date.parse(item.dueAt))
+              ? new Date(item.dueAt).toISOString()
+              : null,
         }))
         .filter((item) => item.text)
     : [];
@@ -75,6 +90,11 @@ export function validateEntryInput(value: unknown): EntryInput {
     input.reminderAt && !Number.isNaN(Date.parse(input.reminderAt))
       ? new Date(input.reminderAt).toISOString()
       : null;
+  if (
+    input.recurrenceRule != null &&
+    !RECURRENCE_RULES.includes(input.recurrenceRule)
+  )
+    throw new Error("Reminder recurrence rule is invalid.");
   return {
     id: input.id,
     kind: input.kind,
@@ -88,6 +108,14 @@ export function validateEntryInput(value: unknown): EntryInput {
     sourceTitle:
       normalizeWhitespace(input.sourceTitle, MAX_TITLE_LENGTH) || null,
     reminderAt,
+    recurrenceRule:
+      input.recurrenceRule && RECURRENCE_RULES.includes(input.recurrenceRule)
+        ? input.recurrenceRule
+        : null,
+    reviewAt:
+      input.reviewAt && !Number.isNaN(Date.parse(input.reviewAt))
+        ? new Date(input.reviewAt).toISOString()
+        : null,
     tagIds: Array.isArray(input.tagIds)
       ? [...new Set(input.tagIds.map(String))].slice(0, 30)
       : [],

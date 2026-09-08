@@ -2,12 +2,14 @@ export type EntryKind = "note" | "list" | "reminder";
 export type EntryStatus = "active" | "archived" | "trashed";
 export type CaptureSource =
   "web" | "android_share" | "chrome_extension" | "mindchuk_import";
+export type RecurrenceRule = "daily" | "weekdays" | "weekly" | "monthly";
 
 export interface ListItem {
   id: string;
   text: string;
   position: number;
   completedAt: string | null;
+  dueAt: string | null;
 }
 
 export interface Tag {
@@ -27,6 +29,7 @@ export interface Attachment {
   size: number;
   createdAt: string;
   url?: string;
+  extractedText?: string;
 }
 
 export interface Entry {
@@ -41,6 +44,10 @@ export interface Entry {
   pinnedAt: string | null;
   reminderAt: string | null;
   reminderState: "pending" | "sending" | "delivered" | "completed" | null;
+  recurrenceRule: RecurrenceRule | null;
+  reviewAt: string | null;
+  lastViewedAt: string | null;
+  viewCount: number;
   createdAt: string;
   updatedAt: string;
   version: number;
@@ -58,8 +65,56 @@ export interface EntryInput {
   sourceUrl?: string | null;
   sourceTitle?: string | null;
   reminderAt?: string | null;
+  recurrenceRule?: RecurrenceRule | null;
+  reviewAt?: string | null;
   tagIds?: string[];
-  listItems?: Array<Pick<ListItem, "id" | "text" | "position" | "completedAt">>;
+  listItems?: Array<
+    Pick<ListItem, "id" | "text" | "position" | "completedAt" | "dueAt">
+  >;
+}
+
+export interface EntryFilters {
+  q?: string;
+  status?: EntryStatus;
+  kind?: EntryKind;
+  tag?: string;
+  sort?: "newest" | "oldest";
+  from?: string;
+  to?: string;
+  pinned?: boolean;
+  reminderState?: "pending" | "delivered" | "completed";
+  hasAttachments?: boolean;
+  due?: "today" | "overdue" | "upcoming";
+  review?: "due" | "stale";
+}
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: EntryFilters;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CaptureTemplate {
+  id: string;
+  name: string;
+  kind: EntryKind;
+  title: string;
+  body: string;
+  listItems: Array<Pick<ListItem, "text" | "dueAt">>;
+  tagIds: string[];
+  reminderText: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserPreferences {
+  onboarding: Record<string, boolean>;
+  defaultCaptureKind: EntryKind;
+  quietStart: string | null;
+  quietEnd: string | null;
+  weeklyReviewDay: number;
 }
 
 export interface Session {
