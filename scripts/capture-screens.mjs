@@ -64,6 +64,45 @@ for (const [name, viewport] of Object.entries({
       ).pathname.slice(1),
       fullPage: true,
     });
+    await page
+      .getByRole("complementary")
+      .getByRole("button", { name: "Inbox" })
+      .click();
+    await page.getByRole("button", { name: "Feed", exact: true }).click();
+    await page.screenshot({
+      path: new URL(
+        `../artifacts/qa/${name}-light-feed.png`,
+        import.meta.url,
+      ).pathname.slice(1),
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    await page.screenshot({
+      path: new URL(
+        `../artifacts/qa/${name}-light-board.png`,
+        import.meta.url,
+      ).pathname.slice(1),
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await page.screenshot({
+      path: new URL(
+        `../artifacts/qa/${name}-light-calendar.png`,
+        import.meta.url,
+      ).pathname.slice(1),
+      fullPage: true,
+    });
+  } else {
+    await page.getByLabel("View options").click();
+    await page.getByLabel("Light mode").check();
+    await page.waitForTimeout(250);
+    await page.screenshot({
+      path: new URL(
+        `../artifacts/qa/${name}-light.png`,
+        import.meta.url,
+      ).pathname.slice(1),
+      fullPage: true,
+    });
   }
   await page.close();
 }

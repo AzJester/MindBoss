@@ -128,6 +128,36 @@ test("switches board, calendar, flex, and view options", async ({
   await page.getByLabel("Light mode").check();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(page.locator(".app-shell")).toHaveClass(/compact-mode/);
+  await expect(page.locator(".advanced-search")).toHaveCSS(
+    "background-color",
+    "rgb(255, 255, 255)",
+  );
+});
+
+test("accepts multiple comma-separated trigger words", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "Desktop tag workflow check");
+  const navigationButton = page.getByRole("button", {
+    name: "Open navigation",
+  });
+  if (await navigationButton.isVisible()) {
+    await navigationButton.click();
+  }
+  await page
+    .getByRole("complementary")
+    .getByRole("button", { name: "Manage tags" })
+    .click();
+  await page.getByLabel("Name").fill("AUTOMATION");
+  const triggers = page.getByLabel(/Trigger words/);
+  await triggers.pressSequentially("alpha, beta, gamma");
+  await expect(triggers).toHaveValue("alpha, beta, gamma");
+  await page.getByRole("button", { name: "Create tag" }).click();
+  const tag = page.locator(".tag-card").filter({ hasText: "#AUTOMATION" });
+  await expect(tag).toContainText("alpha");
+  await expect(tag).toContainText("beta");
+  await expect(tag).toContainText("gamma");
 });
 
 test("saves and reuses a capture template", async ({ page, isMobile }) => {

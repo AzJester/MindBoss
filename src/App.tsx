@@ -1354,10 +1354,20 @@ function TagsPanel({
     triggers: [],
     parentId: null,
   });
+  const [triggerText, setTriggerText] = useState("");
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    onChange(await saveTag(editing));
+    onChange(
+      await saveTag({
+        ...editing,
+        triggers: triggerText
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      }),
+    );
     setEditing({ name: "", color: "#22d3aa", triggers: [], parentId: null });
+    setTriggerText("");
     notify("Tag saved.");
   };
   return (
@@ -1394,16 +1404,8 @@ function TagsPanel({
               Trigger words <small>comma separated</small>
             </span>
             <input
-              value={(editing.triggers || []).join(", ")}
-              onChange={(event) =>
-                setEditing({
-                  ...editing,
-                  triggers: event.target.value
-                    .split(",")
-                    .map((item) => item.trim())
-                    .filter(Boolean),
-                })
-              }
+              value={triggerText}
+              onChange={(event) => setTriggerText(event.target.value)}
               placeholder="project, initiative"
             />
           </label>
@@ -1442,14 +1444,15 @@ function TagsPanel({
               <button
                 type="button"
                 className="secondary-button"
-                onClick={() =>
+                onClick={() => {
                   setEditing({
                     name: "",
                     color: "#22d3aa",
                     triggers: [],
                     parentId: null,
-                  })
-                }
+                  });
+                  setTriggerText("");
+                }}
               >
                 Cancel
               </button>
@@ -1464,7 +1467,10 @@ function TagsPanel({
             <article key={tag.id} className="tag-card">
               <button
                 className="tag-card-main"
-                onClick={() => setEditing({ ...tag })}
+                onClick={() => {
+                  setEditing({ ...tag });
+                  setTriggerText(tag.triggers.join(", "));
+                }}
               >
                 <span className="tag-dot" style={{ background: tag.color }} />
                 <div>

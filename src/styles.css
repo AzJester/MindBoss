@@ -8,8 +8,8 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  background: #07100f;
-  color: #ecf5f2;
+  background: var(--bg);
+  color: var(--text);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --bg: #07100f;
@@ -27,7 +27,12 @@
   --danger: #ff756f;
   --amber: #f9c76b;
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
-  color: var(--text);
+  --surface-translucent: rgba(11, 23, 21, 0.7);
+  --surface-deep: #10211e;
+  --body-copy: #c0d0cc;
+  --link: #79cbe7;
+  --note-label: #9bb6b0;
+  --list-label: #7ed8f7;
 }
 
 * {
@@ -189,7 +194,7 @@ a {
   z-index: 30;
   width: 250px;
   padding: 25px 18px 20px;
-  background: rgba(7, 16, 15, 0.94);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
   border-right: 1px solid var(--line);
   backdrop-filter: blur(18px);
   display: flex;
@@ -232,7 +237,7 @@ a {
   margin-left: auto;
   border: 1px solid var(--line-strong);
   color: var(--muted);
-  background: rgba(0, 0, 0, 0.22);
+  background: var(--panel-2);
   padding: 2px 6px;
   border-radius: 6px;
   font-size: 11px;
@@ -262,7 +267,7 @@ a {
 .sidebar nav button:hover,
 .sidebar-bottom > button:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--panel-2);
 }
 .sidebar nav button.active,
 .sidebar-bottom > button.active {
@@ -310,7 +315,7 @@ a {
 .sidebar-tags button:hover,
 .sidebar-tags button.active {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--panel-2);
 }
 .sidebar-tags button > span {
   width: 7px;
@@ -350,7 +355,7 @@ a {
   position: sticky;
   top: 0;
   z-index: 20;
-  background: rgba(7, 16, 15, 0.78);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(18px);
   display: flex;
@@ -524,7 +529,7 @@ a {
 }
 .secondary-button {
   border: 1px solid var(--line-strong);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--panel-2);
   color: var(--text);
 }
 .secondary-button:hover {
@@ -537,7 +542,7 @@ a {
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--panel-2);
   color: var(--muted);
   display: grid;
   place-items: center;
@@ -589,11 +594,7 @@ a {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 17px;
-  background: linear-gradient(
-    145deg,
-    rgba(16, 32, 29, 0.92),
-    rgba(10, 22, 20, 0.96)
-  );
+  background: var(--panel);
   padding: 20px;
   overflow: visible;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1);
@@ -652,10 +653,10 @@ a {
   letter-spacing: 0.55px;
 }
 .kind-note {
-  color: #9bb6b0;
+  color: var(--note-label);
 }
 .kind-list {
-  color: #7ed8f7;
+  color: var(--list-label);
 }
 .kind-reminder {
   color: var(--amber);
@@ -676,13 +677,13 @@ a {
   -webkit-line-clamp: 6;
   overflow: hidden;
   margin: 0;
-  color: #c0d0cc;
+  color: var(--body-copy);
   font-size: 13px;
   line-height: 1.65;
 }
 .source-link {
   margin-top: 15px;
-  color: #79cbe7;
+  color: var(--link);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -724,7 +725,7 @@ a {
   background: transparent;
   border: 0;
   text-align: left;
-  color: #c5d5d1;
+  color: var(--body-copy);
   cursor: pointer;
   font-size: 13px;
 }
@@ -819,7 +820,7 @@ a {
   right: 0;
   bottom: 35px;
   width: 175px;
-  background: #10211e;
+  background: var(--surface-deep);
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   padding: 6px;
@@ -831,7 +832,7 @@ a {
   border: 0;
   background: transparent;
   border-radius: 7px;
-  color: #c8d9d5;
+  color: var(--text);
   display: flex;
   align-items: center;
   gap: 9px;
@@ -841,7 +842,7 @@ a {
   text-align: left;
 }
 .menu-popover button:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--panel-2);
 }
 .menu-popover button.danger {
   color: var(--danger);
@@ -856,7 +857,7 @@ a {
   justify-items: center;
   text-align: center;
   padding: 50px 20px;
-  background: rgba(11, 23, 21, 0.35);
+  background: var(--surface-translucent);
 }
 .empty-orbit {
   width: 62px;
@@ -917,7 +918,7 @@ a {
   width: min(720px, 100%);
   max-height: calc(100vh - 48px);
   overflow-y: auto;
-  background: #0d1b18;
+  background: var(--surface-deep);
   border: 1px solid var(--line-strong);
   border-radius: 21px;
   box-shadow: var(--shadow);
@@ -944,7 +945,7 @@ a {
   min-height: 42px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--panel-2);
   color: var(--muted);
   display: flex;
   align-items: center;
@@ -1023,10 +1024,10 @@ a {
   gap: 11px;
   align-items: flex-start;
   border: 1px solid var(--line);
-  background: rgba(56, 189, 248, 0.05);
+  background: color-mix(in srgb, var(--list-label) 8%, transparent);
   border-radius: 10px;
   padding: 11px 12px;
-  color: #7ed8f7;
+  color: var(--list-label);
   margin-bottom: 16px;
 }
 .source-preview svg {
@@ -1039,14 +1040,14 @@ a {
   gap: 3px;
 }
 .source-preview strong {
-  color: #ccebf5;
+  color: color-mix(in srgb, var(--list-label) 55%, var(--text));
   font-size: 12px;
 }
 .source-preview span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #739ba5;
+  color: var(--muted);
   font-size: 10px;
 }
 .tag-picker {
@@ -1062,7 +1063,7 @@ a {
 .tag-picker button {
   min-height: 30px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--panel-2);
   color: var(--muted);
   border-radius: 15px;
   padding: 0 10px;
@@ -1072,7 +1073,7 @@ a {
 }
 .tag-picker button.selected {
   border-color: color-mix(in srgb, var(--tag-color) 58%, transparent);
-  color: color-mix(in srgb, var(--tag-color) 80%, white);
+  color: color-mix(in srgb, var(--tag-color) 72%, var(--text));
   background: color-mix(in srgb, var(--tag-color) 12%, transparent);
 }
 .file-picker {
@@ -1108,7 +1109,7 @@ a {
   border: 1px solid var(--line);
   border-radius: 9px;
   padding: 0 7px 0 11px;
-  background: rgba(4, 12, 11, 0.45);
+  background: var(--panel-2);
 }
 .existing-attachments a {
   min-width: 0;
@@ -1116,7 +1117,7 @@ a {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: #7ed8f7;
+  color: var(--link);
   font-size: 11px;
   text-decoration: none;
   white-space: nowrap;
@@ -1220,11 +1221,7 @@ a {
 .settings-card {
   border: 1px solid var(--line);
   border-radius: 15px;
-  background: linear-gradient(
-    145deg,
-    rgba(16, 32, 29, 0.86),
-    rgba(10, 22, 20, 0.86)
-  );
+  background: var(--panel);
   padding: 19px;
   display: flex;
   align-items: flex-start;
@@ -1295,7 +1292,7 @@ a {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  background: #06110f;
+  background: var(--surface-deep);
   border: 1px solid rgba(65, 226, 183, 0.2);
   color: var(--accent-2);
   font-size: 11px;
@@ -1312,7 +1309,7 @@ a {
   width: min(760px, 100%);
   border: 1px solid var(--line-strong);
   border-radius: 20px;
-  background: #0d1b18;
+  background: var(--surface-deep);
   box-shadow: var(--shadow);
   padding: 27px;
 }
@@ -1335,7 +1332,7 @@ a {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 14px;
-  background: rgba(4, 12, 11, 0.55);
+  background: var(--panel-2);
 }
 .conflict-compare strong {
   color: var(--accent);
@@ -1411,7 +1408,7 @@ a {
 .tag-card {
   border: 1px solid var(--line);
   border-radius: 13px;
-  background: rgba(11, 23, 21, 0.72);
+  background: var(--panel);
   padding: 7px;
   display: flex;
   align-items: center;
@@ -1502,7 +1499,7 @@ a {
 .mapping-grid select {
   height: 35px;
   border: 1px solid var(--line);
-  background: #081512;
+  background: var(--panel-2);
   color: var(--text);
   border-radius: 8px;
   padding: 0 8px;
@@ -1511,7 +1508,7 @@ a {
 .import-preview {
   margin-top: 13px;
   padding: 11px;
-  background: #071411;
+  background: var(--panel-2);
   border-radius: 9px;
 }
 .import-preview strong {
@@ -1559,11 +1556,7 @@ a {
   border: 1px solid var(--line);
   border-radius: 27px;
   padding: clamp(32px, 6vw, 60px);
-  background: linear-gradient(
-    145deg,
-    rgba(16, 32, 29, 0.94),
-    rgba(7, 16, 15, 0.98)
-  );
+  background: var(--panel);
   box-shadow: var(--shadow);
 }
 .signin-card .brand {
@@ -1606,14 +1599,14 @@ a {
   min-height: 46px;
   max-width: min(420px, calc(100vw - 48px));
   border: 1px solid rgba(65, 226, 183, 0.35);
-  background: #10231f;
+  background: var(--surface-deep);
   box-shadow: var(--shadow);
   border-radius: 12px;
   padding: 0 15px;
   display: flex;
   align-items: center;
   gap: 9px;
-  color: #dffaf3;
+  color: var(--text);
   font-size: 12px;
   animation: toast-in 0.25s ease both;
 }
@@ -1838,7 +1831,7 @@ a {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
     align-items: center;
-    background: rgba(7, 16, 15, 0.96);
+    background: color-mix(in srgb, var(--bg) 96%, transparent);
     border-top: 1px solid var(--line);
     backdrop-filter: blur(18px);
   }
@@ -1960,7 +1953,7 @@ a {
   margin: -8px 0 24px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: rgba(11, 23, 21, 0.7);
+  background: var(--surface-translucent);
 }
 .advanced-search > summary {
   min-height: 46px;
@@ -2090,11 +2083,7 @@ a {
   padding: 15px 17px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: linear-gradient(
-    140deg,
-    rgba(65, 226, 183, 0.08),
-    rgba(11, 23, 21, 0.75)
-  );
+  background: linear-gradient(140deg, var(--accent-dim), var(--panel));
   display: grid;
 }
 .today-summary strong {
@@ -2414,7 +2403,7 @@ a {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: #06100e;
+  background: var(--surface-deep);
   color: var(--text);
   font-family: inherit;
   font-size: 12px;
@@ -2966,6 +2955,12 @@ html[data-theme="light"] {
   --danger: #b52f2a;
   --amber: #a16000;
   --shadow: 0 24px 70px rgba(16, 55, 45, 0.16);
+  --surface-translucent: #ffffff;
+  --surface-deep: #e5efeb;
+  --body-copy: #314e45;
+  --link: #006b8f;
+  --note-label: #48665f;
+  --list-label: #087ba2;
 }
 @media (prefers-color-scheme: light) {
   html[data-theme="system"] {
@@ -2985,6 +2980,12 @@ html[data-theme="light"] {
     --danger: #b52f2a;
     --amber: #a16000;
     --shadow: 0 24px 70px rgba(16, 55, 45, 0.16);
+    --surface-translucent: #ffffff;
+    --surface-deep: #e5efeb;
+    --body-copy: #314e45;
+    --link: #006b8f;
+    --note-label: #48665f;
+    --list-label: #087ba2;
   }
 }
 html[data-theme="light"] body,
