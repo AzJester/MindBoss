@@ -1147,30 +1147,20 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
   const auth = await loadAuth(env, request);
   if (parts[0] === "session" && request.method === "GET") {
     if (!auth) return json({ authenticated: false });
-    const rawSession = randomToken(32);
-    const tokenHash = await sha256(`${rawSession}:${env.SESSION_SECRET}`);
-    const csrfToken = randomToken(24);
-    const now = nowIso();
-    const expiresAt = new Date(
-      Date.now() + 30 * 24 * 60 * 60_000,
-    ).toISOString();
     await env.DB.prepare(
-      "UPDATE sessions SET token_hash = ?, csrf_token = ?, expires_at = ?, last_seen_at = ? WHERE token_hash = ?",
+      "UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?",
     )
-      .bind(tokenHash, csrfToken, expiresAt, now, auth.tokenHash)
+      .bind(nowIso(), auth.tokenHash)
       .run();
-    return json(
-      {
-        authenticated: true,
-        csrfToken,
-        user: {
-          id: auth.user.id,
-          login: auth.user.login,
-          avatarUrl: auth.user.avatarUrl,
-        },
+    return json({
+      authenticated: true,
+      csrfToken: auth.csrfToken,
+      user: {
+        id: auth.user.id,
+        login: auth.user.login,
+        avatarUrl: auth.user.avatarUrl,
       },
-      { headers: { "set-cookie": sessionCookie(rawSession) } },
-    );
+    });
   }
   const current = requireAuth(auth);
   if (parts[0] === "logout" && request.method === "POST") {

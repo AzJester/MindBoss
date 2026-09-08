@@ -9,6 +9,7 @@ import { strToU8, zipSync } from "fflate";
 
 const LOCAL_ENTRIES_KEY = "mindboss.local.entries";
 const LOCAL_TAGS_KEY = "mindboss.local.tags";
+const CSRF_KEY = "mindboss.csrf";
 export const isLocalMode =
   import.meta.env.VITE_LOCAL_MODE === "true" ||
   location.hostname === "127.0.0.1" ||
@@ -169,7 +170,8 @@ function seedLocal(): void {
 }
 
 async function remote<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const csrfToken = sessionStorage.getItem("mindboss.csrf") || "";
+  const csrfToken =
+    localStorage.getItem(CSRF_KEY) || sessionStorage.getItem(CSRF_KEY) || "";
   const headers = new Headers(init.headers);
   if (init.body && !(init.body instanceof FormData))
     headers.set("content-type", "application/json");
@@ -208,12 +210,15 @@ export async function getSession(): Promise<Session> {
       csrfToken: "local",
       user: { id: 127560421, login: "AzJester", avatarUrl: "" },
     } satisfies Session;
-    sessionStorage.setItem("mindboss.csrf", "local");
+    localStorage.setItem(CSRF_KEY, "local");
+    sessionStorage.removeItem(CSRF_KEY);
     return session;
   }
   const session = await remote<Session>("/session");
-  if (session.csrfToken)
-    sessionStorage.setItem("mindboss.csrf", session.csrfToken);
+  if (session.csrfToken) {
+    localStorage.setItem(CSRF_KEY, session.csrfToken);
+    sessionStorage.removeItem(CSRF_KEY);
+  }
   return session;
 }
 
@@ -651,4 +656,6 @@ export async function downloadFullBackup(): Promise<void> {
 export async function logout(): Promise<void> {
   if (isLocalMode) return;
   await remote("/logout", { method: "POST", body: JSON.stringify({}) });
+  localStorage.removeItem(CSRF_KEY);
+  sessionStorage.removeItem(CSRF_KEY);
 }
