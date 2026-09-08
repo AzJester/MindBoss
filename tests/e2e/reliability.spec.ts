@@ -39,6 +39,12 @@ test("real API filters, offline recovery, details, and explicit AI selection", a
     })),
   });
   let offline = false;
+  let releaseDetails: () => void = () => undefined;
+  let heldDetails = false;
+  let holdDetails = true;
+  const detailsGate = new Promise<void>((resolve) => {
+    releaseDetails = resolve;
+  });
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== "https://mindboss.st-dba.com") return route.abort();
@@ -52,6 +58,14 @@ test("real API filters, offline recovery, details, and explicit AI selection", a
         body ? JSON.parse(body) : undefined,
         { "x-csrf-token": incoming.headers()["x-csrf-token"] || "" },
       );
+      if (
+        holdDetails &&
+        incoming.method() === "GET" &&
+        /^\/api\/v1\/entries\/[a-f0-9-]+$/.test(url.pathname)
+      ) {
+        heldDetails = true;
+        await detailsGate;
+      }
       return route.fulfill({
         status: response.status,
         headers: Object.fromEntries(response.headers),
@@ -91,7 +105,38 @@ test("real API filters, offline recovery, details, and explicit AI selection", a
       () => document.activeElement?.closest("dialog") !== null,
     ),
   ).toBe(true);
+  await expect.poll(() => heldDetails).toBe(true);
   await page.getByRole("button", { name: "Close entry" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const detailsResponse = page.waitForResponse((response) =>
+    /\/api\/v1\/entries\/[a-f0-9-]+$/.test(new URL(response.url()).pathname),
+  );
+  holdDetails = false;
+  releaseDetails();
+  await detailsResponse;
+  // Wait for the real cache write that precedes the UI's detail refresh.
+  await page.waitForFunction(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const request = indexedDB.open("mindboss-offline", 2);
+      request.onsuccess = () => resolve(request.result);
+    });
+    const rows = await new Promise<Array<{ id: string }>>((resolve) => {
+      const request = db
+        .transaction("state", "readonly")
+        .objectStore("state")
+        .getAll();
+      request.onsuccess = () => resolve(request.result);
+    });
+    db.close();
+    return rows.some((row) => /^api:\/entries\/[a-f0-9-]+$/.test(row.id));
+  });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByRole("button", { name: "Show all 7 tasks" }).click();
   await expect(page.getByText("Task 7", { exact: true })).toBeVisible();
   offline = true;

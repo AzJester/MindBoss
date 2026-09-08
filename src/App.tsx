@@ -2636,7 +2636,16 @@ export default function App() {
   const openDetails = (entry: Entry) => {
     setDetailsEntry(entry);
     void getEntry(entry.id)
-      .then(setDetailsEntry)
+      .then((fresh) =>
+        setDetailsEntry((current) =>
+          current &&
+          fresh &&
+          current.id === fresh.id &&
+          fresh.version >= current.version
+            ? fresh
+            : current,
+        ),
+      )
       .catch((error) => notify(error.message));
   };
   const switchView = (next: View) => {
@@ -2821,7 +2830,11 @@ export default function App() {
         ...changes,
         version: entry.version,
       });
-      if (detailsEntry?.id === saved.id) setDetailsEntry(saved);
+      setDetailsEntry((current) =>
+        current?.id === saved.id && saved.version >= current.version
+          ? saved
+          : current,
+      );
       await refresh();
     } catch (error) {
       notify(

@@ -16,25 +16,40 @@ async function ready(page: Page) {
   });
 }
 
-async function share(page: Page, count = 2) {
-  await page.evaluate(async (count) => {
-    const form = new FormData();
-    form.set("title", "Android shared reference");
-    form.set("text", "Shared text preserved on this device");
-    form.set("url", "https://example.com/reference");
-    for (let i = 0; i < count; i++)
-      form.append(
-        "files",
-        new File(["%PDF-1.4\n% test fixture " + i], "reference-" + i + ".pdf", {
-          type: "application/pdf",
-        }),
-      );
-    const response = await fetch("/capture/share", {
-      method: "POST",
-      body: form,
-    });
-    if (!response.ok) throw new Error("Share was not stored");
-  }, count);
+async function share(page: Page, count = 2, fileOnly = false) {
+  await page.evaluate(
+    async ({ count, fileOnly }) => {
+      const form = new FormData();
+      form.set("title", "Android shared reference");
+      form.set("text", "Shared text preserved on this device");
+      form.set("url", "https://example.com/reference");
+      if (fileOnly) {
+        form.delete("title");
+        form.delete("text");
+        form.delete("url");
+      }
+      const image = await (await fetch("/icon-192.png")).arrayBuffer();
+      for (let i = 0; i < count; i++)
+        form.append(
+          "files",
+          i === 0
+            ? new File([image], "shared-image.png", { type: "image/png" })
+            : new File(
+                ["%PDF-1.4\n% test fixture " + i],
+                "reference-" + i + ".pdf",
+                {
+                  type: "application/pdf",
+                },
+              ),
+        );
+      const response = await fetch("/capture/share", {
+        method: "POST",
+        body: form,
+      });
+      if (!response.ok) throw new Error("Share was not stored");
+    },
+    { count, fileOnly },
+  );
   await page.reload();
   await expect(
     page.getByRole("dialog", { name: "Capture entry", exact: true }),
@@ -108,4 +123,18 @@ test("oversized share count remains recoverable instead of silently dropping fil
   await expect(
     page.getByRole("button", { name: "Save to Mind Boss", exact: true }),
   ).toBeEnabled();
+});
+test("file-only shares can save without requiring a manually entered title", async ({
+  page,
+}) => {
+  await ready(page);
+  await share(page, 1, true);
+  await expect(page.getByLabel(/Title/)).toHaveValue("");
+  await page
+    .getByRole("button", { name: "Save to Mind Boss", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(
+    page.locator(".entry-card").filter({ hasText: "shared-image.png" }),
+  ).toBeVisible();
 });
