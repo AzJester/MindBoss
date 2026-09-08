@@ -52,9 +52,10 @@ GitHub, `wrangler.toml`, browser storage, or a build artifact.
 npx wrangler pages secret put OPENAI_API_KEY --project-name mindboss
 ```
 
-Mind Boss locks the integration to `gpt-5.4-mini`, sends only the preview the
-owner explicitly approves, sets `store: false`, and enforces 10 requests per
-UTC day and 200 requests per UTC month.
+Mind Boss locks the integration to `gpt-5.6-sol` with `high` reasoning, sends
+only the preview the owner explicitly approves, sets `store: false`, and
+enforces 5 requests per UTC day and 50 requests per UTC month. The lower caps
+are intentional because this model costs more than the previous mini model.
 
 ### Optional SMS capture
 

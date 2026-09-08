@@ -717,6 +717,7 @@ export async function savePreferences(
 export interface AiStatus {
   configured: boolean;
   model: string;
+  reasoningEffort: string;
   dailyLimit: number;
   monthlyLimit: number;
   usedToday: number;
@@ -727,9 +728,10 @@ export async function getAiStatus(): Promise<AiStatus> {
   if (isLocalMode)
     return {
       configured: false,
-      model: "gpt-5.4-mini",
-      dailyLimit: 10,
-      monthlyLimit: 200,
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      dailyLimit: 5,
+      monthlyLimit: 50,
       usedToday: 0,
       usedThisMonth: 0,
     };

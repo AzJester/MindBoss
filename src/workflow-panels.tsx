@@ -401,7 +401,7 @@ export function AiPanel({
           <span />
           {status
             ? status.configured
-              ? `${status.model} connected · ${status.dailyLimit - status.usedToday} requests left today · ${status.monthlyLimit - status.usedThisMonth} left this month`
+              ? `${status.model} · ${status.reasoningEffort} reasoning · ${status.dailyLimit - status.usedToday} requests left today · ${status.monthlyLimit - status.usedThisMonth} left this month`
               : "Secure connection required"
             : "Checking secure connection…"}
         </div>

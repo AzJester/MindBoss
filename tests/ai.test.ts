@@ -19,9 +19,11 @@ describe("secure AI integration", () => {
   });
 
   it("locks cost and privacy controls", () => {
-    expect(worker).toContain('const AI_MODEL = "gpt-5.4-mini"');
-    expect(worker).toContain("const AI_DAILY_LIMIT = 10");
-    expect(worker).toContain("const AI_MONTHLY_LIMIT = 200");
+    expect(worker).toContain('const AI_MODEL = "gpt-5.6-sol"');
+    expect(worker).toContain('const AI_REASONING_EFFORT = "high"');
+    expect(worker).toContain("reasoning: { effort: AI_REASONING_EFFORT }");
+    expect(worker).toContain("const AI_DAILY_LIMIT = 5");
+    expect(worker).toContain("const AI_MONTHLY_LIMIT = 50");
     expect(worker).toContain("store: false");
     expect(worker).toContain("max_output_tokens: 900");
   });

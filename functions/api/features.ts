@@ -408,9 +408,10 @@ const AI_ACTIONS = [
   "find_duplicates",
 ] as const;
 
-const AI_MODEL = "gpt-5.4-mini";
-const AI_DAILY_LIMIT = 10;
-const AI_MONTHLY_LIMIT = 200;
+const AI_MODEL = "gpt-5.6-sol";
+const AI_REASONING_EFFORT = "high";
+const AI_DAILY_LIMIT = 5;
+const AI_MONTHLY_LIMIT = 50;
 
 function utcBoundary(period: "day" | "month"): string {
   const now = new Date();
@@ -452,6 +453,7 @@ export async function handleAi(
   const status = {
     configured: Boolean(env.OPENAI_API_KEY?.startsWith("sk-")),
     model: AI_MODEL,
+    reasoningEffort: AI_REASONING_EFFORT,
     dailyLimit: AI_DAILY_LIMIT,
     monthlyLimit: AI_MONTHLY_LIMIT,
     usedToday: usage.daily,
@@ -527,8 +529,8 @@ export async function handleAi(
       429,
       "ai_usage_limit_reached",
       usage.daily >= AI_DAILY_LIMIT
-        ? "Mind Boss reached its 10-request daily AI limit. Try again tomorrow."
-        : "Mind Boss reached its 200-request monthly AI limit. Try again next month.",
+        ? `Mind Boss reached its ${AI_DAILY_LIMIT}-request daily AI limit. Try again tomorrow.`
+        : `Mind Boss reached its ${AI_MONTHLY_LIMIT}-request monthly AI limit. Try again next month.`,
     );
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -538,6 +540,7 @@ export async function handleAi(
     },
     body: JSON.stringify({
       model,
+      reasoning: { effort: AI_REASONING_EFFORT },
       instructions,
       input: noteText,
       store: false,
