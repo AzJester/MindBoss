@@ -65,6 +65,7 @@ import {
   createClipToken,
   createEntry,
   deleteAttachment,
+  deleteEntryPermanently,
   deleteTemplate,
   deleteTag,
   downloadFullBackup,
@@ -365,11 +366,13 @@ function EntryCard({
   timeZone,
   onEdit,
   onChange,
+  onDeletePermanently,
 }: {
   entry: Entry;
   timeZone: string;
   onEdit: (entry: Entry) => void;
   onChange: (entry: Entry, changes: Record<string, unknown>) => Promise<void>;
+  onDeletePermanently: (entry: Entry) => Promise<void>;
 }) {
   const completed = entry.listItems.filter((item) => item.completedAt).length;
   const menuRef = useRef<HTMLDetailsElement>(null);
@@ -541,9 +544,20 @@ function EntryCard({
           </summary>
           <div className="menu-popover">
             {entry.status === "trashed" ? (
-              <button onClick={() => change({ status: "active" })}>
-                <Undo2 size={15} /> Restore
-              </button>
+              <>
+                <button onClick={() => change({ status: "active" })}>
+                  <Undo2 size={15} /> Restore
+                </button>
+                <button
+                  className="danger"
+                  onClick={async () => {
+                    if (menuRef.current) menuRef.current.open = false;
+                    await onDeletePermanently(entry);
+                  }}
+                >
+                  <Trash2 size={15} /> Delete permanently
+                </button>
+              </>
             ) : (
               <>
                 <button onClick={() => change({ pinned: !entry.pinnedAt })}>
@@ -2432,6 +2446,27 @@ export default function App() {
     }
   };
 
+  const permanentlyDelete = async (entry: Entry) => {
+    const label = entry.title.trim() || `this ${entry.kind}`;
+    if (
+      !confirm(
+        `Delete "${label}" permanently? This cannot be undone, and any attachments will also be deleted.`,
+      )
+    )
+      return;
+    try {
+      await deleteEntryPermanently(entry.id, entry.version);
+      await refresh();
+      notify("Entry permanently deleted.");
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : "Could not permanently delete the entry.",
+      );
+    }
+  };
+
   if (!session && loading)
     return (
       <div className="app-loading">
@@ -2646,7 +2681,7 @@ export default function App() {
                           : view === "reminders"
                             ? "Due reminders stay visible here even when notifications are off."
                             : view === "trash"
-                              ? "Items are permanently removed after 30 days."
+                              ? "Items remain recoverable for 30 days unless you delete them permanently."
                               : "Keep the useful things close without adding more clutter."}
                   </p>
                 </div>
@@ -2755,6 +2790,7 @@ export default function App() {
                         )
                       }
                       onChange={changeEntry}
+                      onDeletePermanently={permanentlyDelete}
                     />
                   )}
                 />

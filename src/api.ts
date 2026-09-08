@@ -470,6 +470,43 @@ export async function updateEntry(
   ).entry;
 }
 
+export async function deleteEntryPermanently(
+  id: string,
+  version: number,
+): Promise<void> {
+  if (isLocalMode) {
+    const entries = readLocal<Entry[]>(LOCAL_ENTRIES_KEY, []);
+    const entry = entries.find((item) => item.id === id);
+    if (!entry) throw new ApiError("entry_not_found", "Entry not found.", 404);
+    if (entry.status !== "trashed")
+      throw new ApiError(
+        "entry_not_trashed",
+        "Only entries in Trash can be permanently deleted.",
+        409,
+      );
+    if (entry.version !== version)
+      throw new ApiError(
+        "entry_conflict",
+        "This entry changed on another device.",
+        409,
+        { server: entry },
+      );
+    writeLocal(
+      LOCAL_ENTRIES_KEY,
+      entries.filter((item) => item.id !== id),
+    );
+    return;
+  }
+  const params = new URLSearchParams({
+    permanent: "true",
+    version: String(version),
+  });
+  await remote(`/entries/${encodeURIComponent(id)}?${params}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function getTags(): Promise<Tag[]> {
   if (isLocalMode) {
     seedLocal();

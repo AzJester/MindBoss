@@ -26,6 +26,41 @@ test("captures and retrieves a note", async ({ page }) => {
   await expect(page.getByText("Deployment checklist")).toBeVisible();
 });
 
+test("permanently deletes an entry from Trash after confirmation", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByLabel(/Title/).fill("Discard this entry");
+  await page.getByLabel("Note").fill("This should not remain in Trash.");
+  await page.getByRole("button", { name: "Save to Mind Boss" }).click();
+
+  let card = page
+    .locator(".entry-card")
+    .filter({ hasText: "Discard this entry" });
+  await card.getByLabel("Entry actions").click();
+  await card.getByRole("button", { name: "Move to trash" }).click();
+
+  await page.goto("/?view=trash");
+  await expect(
+    page.getByRole("heading", { name: "Recently deleted" }),
+  ).toBeVisible();
+  card = page.locator(".entry-card").filter({ hasText: "Discard this entry" });
+  await expect(card).toBeVisible();
+  await card.getByLabel("Entry actions").click();
+  page.once("dialog", async (confirmation) => {
+    expect(confirmation.message()).toContain("cannot be undone");
+    await confirmation.accept();
+  });
+  await card.getByRole("button", { name: "Delete permanently" }).click();
+
+  await expect(page.getByText("Entry permanently deleted.")).toBeVisible();
+  await expect(card).toHaveCount(0);
+  await page.reload();
+  await expect(
+    page.locator(".entry-card").filter({ hasText: "Discard this entry" }),
+  ).toHaveCount(0);
+});
+
 test("creates, reorders, and completes a list", async ({ page }) => {
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByRole("tab", { name: "list" }).click();

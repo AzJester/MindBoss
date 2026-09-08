@@ -793,6 +793,56 @@ async function updateEntry(
   return (await loadEntry(env, auth.user.id, entryId))!;
 }
 
+async function deleteEntryPermanently(
+  env: Env,
+  auth: AuthContext,
+  entryId: string,
+  version: number,
+): Promise<void> {
+  const existing = await loadEntry(env, auth.user.id, entryId);
+  if (!existing)
+    throw new HttpError(404, "entry_not_found", "Entry not found.");
+  if (existing.status !== "trashed")
+    throw new HttpError(
+      409,
+      "entry_not_trashed",
+      "Only entries in Trash can be permanently deleted.",
+    );
+  if (!Number.isInteger(version) || version !== existing.version)
+    throw new HttpError(
+      409,
+      "entry_conflict",
+      "This entry changed on another device.",
+      { server: existing },
+    );
+
+  const attachments = await env.DB.prepare(
+    "SELECT r2_key FROM attachments WHERE entry_id = ?",
+  )
+    .bind(entryId)
+    .all<{ r2_key: string }>();
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM entries_fts WHERE entry_id IN (
+        SELECT id FROM entries WHERE id = ? AND user_id = ? AND status = 'trashed' AND version = ?
+      )`,
+    ).bind(entryId, auth.user.id, version),
+    env.DB.prepare(
+      "DELETE FROM entries WHERE id = ? AND user_id = ? AND status = 'trashed' AND version = ?",
+    ).bind(entryId, auth.user.id, version),
+  ]);
+  if (!results[1]?.meta.changes)
+    throw new HttpError(
+      409,
+      "entry_conflict",
+      "This entry changed on another device.",
+    );
+  if (attachments.results.length)
+    await env.ATTACHMENTS.delete(
+      attachments.results.map((attachment) => attachment.r2_key),
+    );
+}
+
 function validColor(value: unknown): string {
   const color = typeof value === "string" ? value : "#22d3aa";
   return /^#[0-9a-f]{6}$/i.test(color) ? color : "#22d3aa";
@@ -1516,6 +1566,19 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
           await requestJson(request),
         ),
       });
+    if (
+      request.method === "DELETE" &&
+      parts[1] &&
+      new URL(request.url).searchParams.get("permanent") === "true"
+    ) {
+      await deleteEntryPermanently(
+        env,
+        current,
+        parts[1],
+        Number(new URL(request.url).searchParams.get("version")),
+      );
+      return new Response(null, { status: 204 });
+    }
     if (request.method === "DELETE" && parts[1])
       return json({
         entry: await updateEntry(env, current, parts[1], {
