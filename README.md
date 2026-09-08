@@ -7,7 +7,7 @@ The app is designed for one authorized GitHub account, a Chrome clipper, and an 
 ## What is implemented
 
 - Responsive React and TypeScript application with Today, inbox, lists, reminders, review, archive, trash, tags, and settings.
-- Feed, time-grouped, configurable tag board, monthly calendar, and flexible dense-grid views with synchronized compact, sort, and tag-navigation preferences.
+- Feed, time-grouped, configurable tag board, monthly calendar and mobile agenda, and dense Grid views with synchronized compact, sort, and tag-navigation preferences. Calendar days expand to show every scheduled item.
 - Synchronized dark, light, and device-matched themes, three dashboard font styles, and a selectable display time zone that controls calendars, reminder parsing, snoozing, and quiet hours.
 - Notes, ordered checklists with item due dates, natural-language and recurring reminders, quiet hours, pinning, copy, archive, restore, 30-day recoverable trash, optional immediate permanent deletion, and optimistic concurrency handling.
 - Nested tags with whole-word, case-insensitive trigger rules. Manual tags are never removed by trigger recalculation.
@@ -16,12 +16,18 @@ The app is designed for one authorized GitHub account, a Chrome clipper, and an 
 - Images and PDFs in private R2 storage, limited to five files and 20 MB per file, with client-side image compression, previews, text extraction, server-side signature detection, and content-deduplicated retry.
 - GitHub OAuth with PKCE, one-use state, exact immutable-account allowlisting, hashed opaque sessions, rotating cookies, CSRF, and origin validation.
 - Web Push subscriptions encrypted at rest and a scheduled reminder Worker.
-- Offline draft saving, Android share intake through IndexedDB, Background Sync, visible sync state, and automatic refresh across devices.
+- Durable offline drafts including files, Android share intake through IndexedDB, Background Sync with shared locking, an inspectable retry queue, cached offline access, and truthful device-versus-account save status.
 - Manifest V3 Chrome clipper with toolbar, context menu, keyboard shortcut, selected-text capture, capture-only tokens, and an offline retry queue.
-- Browser-side MindChuk CSV parsing and mapping, resumable 100-record imports, repeat-import deduplication, CSV and JSON export, and full ZIP backup with attachment files.
-- Review-date resurfacing, stale-note and on-this-day review queues, and an onboarding checklist.
-- Optional bring-your-own-key OpenAI tools with an explicit per-request data preview. Keys stay in browser session storage and requests use `store: false`.
-- Optional Twilio SMS capture with an exact sender allowlist, signed webhook validation, message retry deduplication, built-in commands, hashtags, and tag trigger keywords.
+- Browser-side MindChuk CSV parsing and mapping, resumable 25-record batches, repeat-import deduplication, complete CSV and JSON exports without a 250-entry cap, full ZIP backups with attachment files, and additive JSON/ZIP restore.
+- Review-date resurfacing, stale-note and on-this-day review queues, weekly-review prompts, and device-specific installation and notification guidance.
+- Optional OpenAI tools using the existing server-side secret, GPT-5.6 Sol with high reasoning, explicit entry selection and a complete per-request preview. Consent resets when the data changes. Results can be copied or saved as notes/lists. Requests use `store: false`; configured does not imply that a paid API request has been verified. No API key is stored in browser storage.
+- Legacy optional SMS code remains disabled and is not part of setup. No paid SMS service is provisioned or activated.
+
+## Reliability and interface release (0.3.0)
+
+Settings is organized into Account, Appearance, Notifications, Capture, and Data. Entries open in a read-first detail sheet. List rows have a Due column and a full-button calendar picker. Today separates overdue, due today, upcoming, and captured items. Sync, push registration, and AI setup states describe what has actually been confirmed.
+
+The release adds atomic stale-write protection, per-device push retry tracking, timezone-safe recurrence with month-end anchors, durable R2 cleanup jobs, and deletion tombstones that prevent old offline captures from returning after permanent deletion. See [docs/RELEASE-0.3.0.md](docs/RELEASE-0.3.0.md) for validation and remaining device checks.
 
 ## Architecture
 

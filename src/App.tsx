@@ -62,6 +62,7 @@ import type {
 } from "../shared/types";
 import {
   ApiError,
+  remote,
   addAttachment,
   createClipToken,
   createEntry,
@@ -80,6 +81,7 @@ import {
   getTemplates,
   importEntries,
   isLocalMode,
+  usingCachedData,
   logout,
   saveTag,
   savePreferences,
@@ -91,6 +93,8 @@ import { prepareAttachment, type PreparedAttachment } from "./attachments";
 import {
   clearDraft,
   drainOutbox,
+  acknowledgeOutbox,
+  withSyncLock,
   loadDraft,
   outboxCount,
   saveDraft,
@@ -108,15 +112,21 @@ import {
 } from "./reminders";
 import {
   AdvancedSearchPanel,
-  AiPanel,
   AppearanceCard,
-  OnboardingChecklist,
   PreferencesCard,
   ReviewQueue,
-  SmsCard,
-  TodaySummary,
 } from "./workflow-panels";
 import { EntryLayouts, ViewControls } from "./view-layouts";
+import {
+  AiWorkspace,
+  EntryDetails,
+  SyncPanel,
+  TodayWorkspace,
+  NotificationSettings,
+  RestorePanel,
+} from "./workspaces";
+import { DateControl, Modal } from "./ui";
+import { entryDueDates, localInstant } from "../shared/time";
 
 type View =
   | "today"
@@ -127,7 +137,8 @@ type View =
   | "archive"
   | "trash"
   | "tags"
-  | "settings";
+  | "settings"
+  | "ai";
 
 interface Draft {
   id: string;
@@ -202,9 +213,10 @@ function parseSearchQuery(value: string, tags: Tag[]): EntryFilters {
     const key = prefix.toLocaleLowerCase();
     const argument = raw?.toLocaleLowerCase();
     if (key === "tag" && argument) {
-      filters.tag = tags.find(
-        (tag) => tag.name.toLocaleLowerCase() === argument.replace(/^#/, ""),
-      )?.id;
+      filters.tag =
+        tags.find(
+          (tag) => tag.name.toLocaleLowerCase() === argument.replace(/^#/, ""),
+        )?.id || "__unknown_tag__";
     } else if (
       key === "type" &&
       ["note", "list", "reminder"].includes(argument)
@@ -240,6 +252,7 @@ const NAV_ITEMS: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "lists", label: "Lists", icon: ListChecks },
   { id: "reminders", label: "Reminders", icon: Bell },
   { id: "review", label: "Review", icon: Sparkles },
+  { id: "ai", label: "AI workspace", icon: Sparkles },
   { id: "archive", label: "Archive", icon: Archive },
   { id: "trash", label: "Trash", icon: Trash2 },
 ];
@@ -377,6 +390,7 @@ function EntryCard({
   onDeletePermanently: (entry: Entry) => Promise<void>;
 }) {
   const completed = entry.listItems.filter((item) => item.completedAt).length;
+  const [expanded, setExpanded] = useState(false);
   const menuRef = useRef<HTMLDetailsElement>(null);
   const change = async (changes: Record<string, unknown>) => {
     if (menuRef.current) menuRef.current.open = false;
@@ -389,7 +403,7 @@ function EntryCard({
       <button
         className="entry-main"
         onClick={() => onEdit(entry)}
-        aria-label={`Edit ${entry.title || entry.kind}`}
+        aria-label={`Open ${entry.title || entry.kind}`}
       >
         <div className="entry-meta">
           <span className={`kind-icon kind-${entry.kind}`}>
@@ -438,7 +452,7 @@ function EntryCard({
           <span>
             {completed} of {entry.listItems.length}
           </span>
-          {entry.listItems.slice(0, 5).map((item) => (
+          {entry.listItems.slice(0, expanded ? undefined : 5).map((item) => (
             <button
               key={item.id}
               className={`list-row ${item.completedAt ? "complete" : ""}`}
@@ -476,9 +490,19 @@ function EntryCard({
           ))}
         </div>
       )}
+      {entry.listItems.length > 5 && (
+        <button
+          className="text-button list-expand"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded
+            ? "Show fewer tasks"
+            : `Show all ${entry.listItems.length} tasks`}
+        </button>
+      )}
       {entry.reminderAt && (
         <div
-          className={`reminder-chip ${isDue(entry.reminderAt) ? "due" : ""}`}
+          className={`reminder-chip ${isDue(entry.reminderAt) && entry.reminderState !== "completed" ? "due" : ""}`}
         >
           <BellRing size={14} /> {formatDateTime(entry.reminderAt, timeZone)}
           {entry.reminderState === "completed" && " · Done"}
@@ -668,6 +692,9 @@ function Composer({
   onTemplateSaved: (template: CaptureTemplate) => void;
 }) {
   const [value, setValue] = useState(draft);
+  useEffect(() => {
+    setValue(draft);
+  }, [draft]);
   const [saving, setSaving] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
   const [processingFiles, setProcessingFiles] = useState(false);
@@ -679,7 +706,14 @@ function Composer({
     [value.kind, value.reminderText, timeZone],
   );
   useEffect(() => {
-    saveDraft({ ...value, files: [] });
+    setDraftStatus("Saving draft on this device…");
+    void saveDraft(value)
+      .then(() => setDraftStatus("Draft saved on this device"))
+      .catch(() =>
+        setDraftStatus(
+          "Draft could not be saved on this device. Keep this window open.",
+        ),
+      );
   }, [value]);
   useEffect(() => {
     if (value.sourceUrl) return;
@@ -708,6 +742,7 @@ function Composer({
     ]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (fileProblem) return;
     setSaving(true);
     try {
       if (
@@ -724,10 +759,19 @@ function Composer({
       setSaving(false);
     }
   };
+  const [draftStatus, setDraftStatus] = useState("Draft saved on this device");
   const hasContent =
+    value.files.length > 0 ||
+    Boolean(value.sourceUrl) ||
     value.title.trim() ||
     value.body.trim() ||
     value.listItems.some((item) => item.text.trim());
+  const fileProblem =
+    value.files.length + (value.editing?.attachments.length || 0) > 5
+      ? "Choose up to five attachments. Remove the extras below before saving."
+      : value.files.some(({ file }) => file.size > 20 * 1024 * 1024)
+        ? "An attachment exceeds 20 MB. Remove it or choose a smaller file before saving."
+        : "";
   const applyTemplate = (templateId: string) => {
     const template = templates.find((item) => item.id === templateId);
     if (!template) return;
@@ -751,8 +795,7 @@ function Composer({
     setProcessingFiles(true);
     try {
       const prepared: PreparedAttachment[] = [];
-      for (const file of files.slice(0, 5))
-        prepared.push(await prepareAttachment(file));
+      for (const file of files) prepared.push(await prepareAttachment(file));
       update("files", prepared);
     } finally {
       setProcessingFiles(false);
@@ -767,7 +810,9 @@ function Composer({
     const template = await saveTemplate({
       name: name.trim(),
       kind: value.kind,
-      title: value.title,
+      title:
+        value.title ||
+        (!value.body && value.files.length ? value.files[0].file.name : ""),
       body: value.body,
       listItems: value.listItems
         .filter((item) => item.text.trim())
@@ -778,12 +823,9 @@ function Composer({
     onTemplateSaved(template);
   };
   return (
-    <div
-      className="dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+    <Modal
+      label={value.editing ? "Edit entry" : "Capture entry"}
+      onClose={onClose}
     >
       <form
         className="composer"
@@ -926,48 +968,31 @@ function Composer({
                 />
                 <div className="item-due-control">
                   <span className="mobile-due-label">Due</span>
-                  <label
-                    className={`item-due-button ${item.dueAt ? "has-date" : ""}`}
-                  >
-                    <CalendarDays size={19} aria-hidden="true" />
-                    <span>
-                      {item.dueAt
-                        ? new Intl.DateTimeFormat("en-US", {
-                            timeZone,
-                            month: "short",
-                            day: "numeric",
-                          }).format(new Date(item.dueAt))
-                        : "Set date"}
-                    </span>
-                    <input
-                      className="item-due-date"
-                      type="date"
-                      aria-label={`Due date for ${item.text || `item ${index + 1}`}`}
-                      value={
-                        item.dueAt
-                          ? dateKeyForTimeZone(item.dueAt, timeZone)
-                          : ""
-                      }
-                      onChange={(event) =>
-                        update(
-                          "listItems",
-                          value.listItems.map((current) =>
-                            current.id === item.id
-                              ? {
-                                  ...current,
-                                  dueAt: event.target.value
-                                    ? dueDateForDateKey(
-                                        event.target.value,
-                                        timeZone,
-                                      ).toISOString()
-                                    : null,
-                                }
-                              : current,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
+                  <DateControl
+                    label={`Due date for ${item.text || `item ${index + 1}`}`}
+                    value={
+                      item.dueAt ? dateKeyForTimeZone(item.dueAt, timeZone) : ""
+                    }
+                    timeZone={timeZone}
+                    onChange={(key) =>
+                      update(
+                        "listItems",
+                        value.listItems.map((current) =>
+                          current.id === item.id
+                            ? {
+                                ...current,
+                                dueAt: key
+                                  ? dueDateForDateKey(
+                                      key,
+                                      timeZone,
+                                    ).toISOString()
+                                  : null,
+                              }
+                            : current,
+                        ),
+                      )
+                    }
+                  />
                   {item.dueAt && (
                     <button
                       type="button"
@@ -1117,13 +1142,18 @@ function Composer({
           </span>
           <input
             type="date"
-            value={value.reviewAt?.slice(0, 10) || ""}
+            value={
+              value.reviewAt ? dateKeyForTimeZone(value.reviewAt, timeZone) : ""
+            }
             onChange={(event) =>
               update(
                 "reviewAt",
                 event.target.value
-                  ? new Date(
-                      `${event.target.value}T09:00:00-07:00`,
+                  ? localInstant(
+                      event.target.value,
+                      9,
+                      0,
+                      timeZone,
                     ).toISOString()
                   : null,
               )
@@ -1214,6 +1244,11 @@ function Composer({
             }
           />
         </label>
+        {fileProblem && (
+          <p className="error-notice" role="alert">
+            {fileProblem}
+          </p>
+        )}
         {value.files.length > 0 && (
           <div className="attachment-previews">
             {value.files.map((attachment, index) => (
@@ -1274,7 +1309,7 @@ function Composer({
         ) : null}
         <footer className="composer-footer">
           <span className="draft-status">
-            <Cloud size={14} /> Draft saved on this device
+            <Cloud size={14} /> {draftStatus}
           </span>
           <div>
             {!value.editing && hasContent && (
@@ -1295,7 +1330,9 @@ function Composer({
             </button>
             <button
               className="primary-button"
-              disabled={!hasContent || saving || processingFiles}
+              disabled={
+                !hasContent || saving || processingFiles || Boolean(fileProblem)
+              }
             >
               {saving
                 ? "Saving…"
@@ -1307,7 +1344,7 @@ function Composer({
           </div>
         </footer>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -1334,7 +1371,11 @@ function ConflictDialog({
     }
   };
   return (
-    <div className="dialog-backdrop conflict-backdrop" role="presentation">
+    <Modal
+      label="Resolve version conflict"
+      className="conflict-backdrop"
+      onClose={onCancel}
+    >
       <section
         className="conflict-dialog"
         role="alertdialog"
@@ -1396,7 +1437,7 @@ function ConflictDialog({
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -1590,11 +1631,21 @@ function Importer({
 }) {
   const [state, setState] = useState<ImportState | null>(null);
   const [busy, setBusy] = useState(false);
+  const [importErrors, setImportErrors] = useState<string[]>([]);
   const chooseFile = (file?: File) => {
     if (!file) return;
+    setImportErrors([]);
     Papa.parse<string[]>(file, {
       skipEmptyLines: true,
       complete: (result) => {
+        if (result.errors.length) {
+          setImportErrors(
+            result.errors.map(
+              (error) => `CSV row ${(error.row || 0) + 1}: ${error.message}`,
+            ),
+          );
+          return;
+        }
         const [headers = [], ...rows] = result.data;
         const lower = headers.map((header) =>
           header.trim().toLocaleLowerCase(),
@@ -1618,6 +1669,10 @@ function Importer({
             status: find("status", "archive"),
             pinned: find("pin", "favorite", "favourite"),
             reminderAt: find("reminder", "due"),
+            recordJson: find("record_json"),
+            sourceUrl: find("source_url", "url"),
+            sourceTitle: find("source_title"),
+            listItems: find("list_items"),
           },
         });
       },
@@ -1628,8 +1683,18 @@ function Importer({
   const startImport = async () => {
     if (!state?.mapping.body && !state?.mapping.title) return;
     setBusy(true);
+    setImportErrors([]);
     try {
       const normalized = state.rows.map((row) => {
+        if (state.mapping.recordJson) {
+          const record = JSON.parse(mappedValue(row, "recordJson")) as Entry;
+          return {
+            ...record,
+            tags: record.tags.map((tag) => tag.name),
+            pinned: Boolean(record.pinnedAt),
+            roundTrip: true,
+          };
+        }
         const kindRaw = mappedValue(row, "kind").toLocaleLowerCase();
         const statusRaw = mappedValue(row, "status").toLocaleLowerCase();
         return {
@@ -1641,6 +1706,22 @@ function Importer({
               : ("note" as const),
           title: mappedValue(row, "title"),
           body: mappedValue(row, "body"),
+          sourceUrl: mappedValue(row, "sourceUrl") || null,
+          sourceTitle: mappedValue(row, "sourceTitle") || null,
+          listItems: mappedValue(row, "listItems")
+            ? JSON.parse(mappedValue(row, "listItems"))
+            : kindRaw.includes("list")
+              ? mappedValue(row, "body")
+                  .split(/\r?\n/)
+                  .filter(Boolean)
+                  .map((text, position) => ({
+                    id: crypto.randomUUID(),
+                    text,
+                    position,
+                    completedAt: null,
+                    dueAt: null,
+                  }))
+              : [],
           source: "mindchuk_import" as const,
           createdAt: mappedValue(row, "createdAt") || undefined,
           reminderAt: mappedValue(row, "reminderAt") || null,
@@ -1661,19 +1742,30 @@ function Importer({
       let created = 0,
         skipped = 0,
         failed = 0;
-      for (let index = 0; index < normalized.length; index += 100) {
-        const result = await importEntries(
-          normalized.slice(index, index + 100),
-        );
+      const errors: string[] = [];
+      for (let index = 0; index < normalized.length; index += 25) {
+        const result = await importEntries(normalized.slice(index, index + 25));
         created += result.created;
         skipped += result.skipped;
         failed += result.errors.length;
+        errors.push(
+          ...result.errors.map(
+            (error) => `Row ${index + error.index + 2}: ${error.message}`,
+          ),
+        );
       }
+      setImportErrors(errors);
       notify(
         `Import complete: ${created} added, ${skipped} already present${failed ? `, ${failed} need review` : ""}.`,
       );
-      setState(null);
+      if (!failed) setState(null);
       onComplete();
+    } catch (error) {
+      setImportErrors([(error as Error).message]);
+      notify(
+        (error as Error).message +
+          " Completed batches are saved. Retry the same file to resume.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1697,6 +1789,18 @@ function Importer({
           The CSV is parsed on this device. Review the mapping before anything
           is saved.
         </p>
+        {importErrors.length > 0 && (
+          <div role="alert" className="validation-warning">
+            <strong>
+              These rows need attention. Completed batches are safe.
+            </strong>
+            <ul>
+              {importErrors.slice(0, 20).map((message, index) => (
+                <li key={index}>{message}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {!state ? (
           <label className="secondary-button file-action">
             <Upload size={16} /> Choose CSV
@@ -1723,6 +1827,10 @@ function Importer({
                 "status",
                 "reminderAt",
                 "pinned",
+                "sourceUrl",
+                "sourceTitle",
+                "listItems",
+                "recordJson",
               ].map((key) => (
                 <label key={key}>
                   <span>
@@ -1814,52 +1922,59 @@ function SettingsPanel({
   templates: CaptureTemplate[];
   onTemplatesChange: (templates: CaptureTemplate[]) => void;
 }) {
-  const [clipToken, setClipToken] = useState("");
-  const [backupBusy, setBackupBusy] = useState(false);
-  const connectNotifications = async () => {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-      notify("This browser does not support push notifications.");
-      return;
-    }
-    const permission = await Notification.requestPermission();
-    if (permission !== "granted") {
-      notify("Notifications remain off. Due reminders will still appear here.");
-      return;
-    }
-    const publicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY as
-      string | undefined;
-    if (!publicKey && !isLocalMode) {
-      notify("Push keys have not been configured yet.");
-      return;
-    }
-    if (!isLocalMode) {
-      const padded = publicKey! + "=".repeat((4 - (publicKey!.length % 4)) % 4);
-      const bytes = Uint8Array.from(
-        atob(padded.replace(/-/g, "+").replace(/_/g, "/")),
-        (char) => char.charCodeAt(0),
-      );
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: bytes,
-      });
-      await subscribeToPush(subscription);
-    }
-    notify("Push reminders are connected.");
-    const next = await savePreferences({
-      onboarding: { ...preferences.onboarding, notifications: true },
-    });
-    onPreferencesChange(next);
+  const [section, setSection] = useState("account"),
+    [clipToken, setClipToken] = useState(""),
+    [backupBusy, setBackupBusy] = useState(false);
+  const [stats, setStats] = useState<{
+      entries: number;
+      attachments: number;
+      bytes: number;
+    } | null>(null),
+    [error, setError] = useState("");
+  const [tokens, setTokens] = useState<
+    Array<{
+      id: string;
+      name: string;
+      lastUsedAt: string | null;
+      revokedAt: string | null;
+    }>
+  >([]);
+  const loadTokens = () => {
+    if (!isLocalMode)
+      void remote<{ tokens: typeof tokens }>("/clip-tokens")
+        .then((value) => setTokens(value.tokens))
+        .catch((error) => setError(error.message));
   };
-  const attachmentBytes = entries.reduce(
-    (total, entry) =>
-      total + entry.attachments.reduce((size, item) => size + item.size, 0),
-    0,
-  );
+  useEffect(() => {
+    if (isLocalMode) {
+      void Promise.all(
+        ["active", "archived", "trashed"].map((status) =>
+          getEntries({ status: status as EntryStatus }),
+        ),
+      ).then((groups) => {
+        const all = groups.flat();
+        setStats({
+          entries: all.length,
+          attachments: all.reduce((n, e) => n + e.attachments.length, 0),
+          bytes: all.reduce(
+            (n, e) => n + e.attachments.reduce((v, a) => v + a.size, 0),
+            0,
+          ),
+        });
+      });
+    } else {
+      void remote<{ entries: number; attachments: number; bytes: number }>(
+        "/stats",
+      )
+        .then(setStats)
+        .catch((error) => setError(error.message));
+    }
+    loadTokens();
+  }, []);
   const updatePreferences = async (next: UserPreferences) => {
-    onPreferencesChange(next);
     try {
       onPreferencesChange(await savePreferences(next));
+      notify("Settings saved to your account.");
     } catch (error) {
       notify(
         error instanceof Error ? error.message : "Could not save settings.",
@@ -1868,211 +1983,324 @@ function SettingsPanel({
   };
   return (
     <section className="utility-panel">
-      <div className="panel-heading">
+      <header className="panel-heading">
         <div>
-          <span className="eyebrow">YOUR SYSTEM</span>
-          <h2>Settings and ownership</h2>
-          <p>
-            Keep access tight, connect capture tools, and take your data with
-            you anytime.
-          </p>
+          <h1>Settings</h1>
+          <p>Your devices, your preferences, your data.</p>
         </div>
-      </div>
-      <div className="settings-stack">
-        <OnboardingChecklist
-          preferences={preferences}
-          hasTags={tags.length > 0}
-          hasEntries={entries.length > 0}
-          onChange={(next) => void updatePreferences(next)}
-        />
-        <PreferencesCard
-          preferences={preferences}
-          onChange={(next) => void updatePreferences(next)}
-        />
-        <AppearanceCard
-          preferences={preferences}
-          onChange={(next) => void updatePreferences(next)}
-        />
-        <div className="settings-card">
-          <div className="settings-icon">
-            <BellRing />
-          </div>
-          <div className="settings-copy">
-            <h3>Push reminders</h3>
-            <p>
-              Receive reminders on this device even when Mind Boss is closed.
-            </p>
-            <button className="secondary-button" onClick={connectNotifications}>
-              Connect this device
+      </header>
+      <nav className="settings-tabs" aria-label="Settings sections">
+        {["account", "appearance", "notifications", "capture", "data"].map(
+          (item) => (
+            <button
+              key={item}
+              aria-pressed={section === item}
+              className={section === item ? "active" : ""}
+              onClick={() => setSection(item)}
+            >
+              {item}
             </button>
-          </div>
-        </div>
-        <div className="settings-card">
-          <div className="settings-icon">
-            <Share2 />
-          </div>
-          <div className="settings-copy">
-            <h3>Chrome clipper</h3>
-            <p>
-              Create a capture-only token. It can add clips but cannot read or
-              change your library.
-            </p>
-            {clipToken ? (
-              <div className="token-reveal">
-                <code>{clipToken}</code>
+          ),
+        )}
+      </nav>
+      {error && <p role="alert">{error}</p>}
+      <div className="settings-stack">
+        {section === "account" && (
+          <>
+            <section className="settings-card account-card">
+              <div className="avatar">
+                <UserAvatar user={session.user} />
+              </div>
+              <div className="settings-copy">
+                <h2>{session.user?.login}</h2>
+                <p>
+                  Private account. GitHub verifies your identity. Notes and
+                  files are stored in your Mind Boss account, not GitHub.
+                </p>
+                <p>
+                  {stats
+                    ? stats.entries +
+                      " entries across Inbox, Archive and Trash."
+                    : "Checking library…"}{" "}
+                  {tags.length} tags.
+                </p>
+                <p>
+                  {matchMedia("(display-mode: standalone)").matches
+                    ? "This device is running the installed app."
+                    : "You’re using the browser. Install Mind Boss from Chrome’s menu to get an app icon."}
+                </p>
                 <button
-                  className="icon-button"
-                  aria-label="Copy token"
-                  onClick={() => {
-                    navigator.clipboard.writeText(clipToken);
-                    notify("Clipper token copied.");
+                  className="secondary-button"
+                  onClick={async () => {
+                    await logout();
+                    location.reload();
                   }}
                 >
-                  <Clipboard />
+                  <LogOut size={16} /> Sign out
                 </button>
-                <small>Shown once. Paste it into the extension.</small>
               </div>
-            ) : (
-              <button
-                className="secondary-button"
-                onClick={async () => {
-                  setClipToken(await createClipToken());
-                  await updatePreferences({
-                    ...preferences,
-                    onboarding: { ...preferences.onboarding, clipper: true },
-                  });
-                }}
-              >
-                Create connection token
-              </button>
-            )}
-          </div>
-        </div>
-        <SmsCard notify={notify} />
-        {templates.length > 0 && (
-          <div className="settings-card">
-            <div className="settings-icon">
-              <Clipboard />
-            </div>
-            <div className="settings-copy">
-              <h3>Capture templates</h3>
-              <p>Reusable starting points available from every new capture.</p>
-              <div className="template-library">
-                {templates.map((template) => (
-                  <div key={template.id}>
-                    <span>
-                      <strong>{template.name}</strong>
-                      <small>{template.kind}</small>
-                    </span>
+            </section>
+            <section className="settings-card">
+              <div className="settings-copy">
+                <h3>Quick setup</h3>
+                <p>
+                  Installation and notification permissions are different on
+                  each device.
+                </p>
+                <div className="button-row">
+                  <button
+                    className="secondary-button"
+                    onClick={() => setSection("capture")}
+                  >
+                    Install on Android
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => setSection("notifications")}
+                  >
+                    Check this device’s reminders
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => setSection("data")}
+                  >
+                    Back up your library
+                  </button>
+                </div>
+              </div>
+            </section>
+          </>
+        )}
+        {section === "appearance" && (
+          <AppearanceCard
+            preferences={preferences}
+            onChange={(next) => void updatePreferences(next)}
+          />
+        )}
+        {section === "notifications" && (
+          <>
+            <NotificationSettings notify={notify} />
+            <PreferencesCard
+              preferences={preferences}
+              onChange={(next) => void updatePreferences(next)}
+            />
+          </>
+        )}
+        {section === "capture" && (
+          <>
+            <section className="settings-card">
+              <div className="settings-copy">
+                <h3>Android app and Share menu</h3>
+                <ol>
+                  <li>
+                    Open mindboss.st-dba.com in Chrome on your phone and sign
+                    in.
+                  </li>
+                  <li>
+                    Open Chrome’s menu and choose Install app or Add to Home
+                    screen.
+                  </li>
+                  <li>
+                    From any page, choose Share, then Mind Boss. Review and
+                    Save.
+                  </li>
+                </ol>
+                <p>
+                  Shared notes and files are kept on this device until you save
+                  and sync. Android does not use the desktop Chrome extension.
+                  No SMS or additional paid service is required.
+                </p>
+              </div>
+            </section>
+            <section className="settings-card">
+              <div className="settings-copy">
+                <h3>Chrome clipper</h3>
+                <p>
+                  Capture the current page, selected text and a note. Tokens can
+                  create clips only. They cannot read your notes.
+                </p>
+                <a
+                  className="secondary-button"
+                  href="https://github.com/AzJester/MindBoss/releases"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Download the extension
+                </a>
+                <p className="helper-text">
+                  Unzip the latest extension package. Open chrome://extensions,
+                  enable Developer mode, choose Load unpacked, and select the
+                  extracted extension folder.
+                </p>
+                <button
+                  className="primary-button"
+                  onClick={async () => {
+                    try {
+                      setClipToken(await createClipToken());
+                      loadTokens();
+                    } catch (error) {
+                      notify((error as Error).message);
+                    }
+                  }}
+                >
+                  Create connection token
+                </button>
+                {clipToken && (
+                  <div className="token-reveal">
+                    <code>{clipToken}</code>
                     <button
-                      className="icon-button danger-text"
-                      aria-label={`Delete ${template.name}`}
-                      onClick={async () => {
-                        await deleteTemplate(template.id);
-                        onTemplatesChange(
-                          templates.filter((item) => item.id !== template.id),
-                        );
-                        notify("Template deleted.");
-                      }}
+                      className="secondary-button"
+                      onClick={() =>
+                        void navigator.clipboard
+                          .writeText(clipToken)
+                          .then(() => notify("Token copied."))
+                      }
                     >
-                      <Trash2 />
+                      Copy
+                    </button>
+                    <small>
+                      Shown only now. Paste into the clipper, then close this
+                      section.
+                    </small>
+                    <button
+                      className="text-button"
+                      onClick={() => setClipToken("")}
+                    >
+                      Hide token
                     </button>
                   </div>
-                ))}
+                )}
+                <div className="device-list">
+                  {tokens.map((token) => (
+                    <div key={token.id}>
+                      <strong>{token.name}</strong>
+                      <small>
+                        {token.revokedAt
+                          ? "Revoked"
+                          : token.lastUsedAt
+                            ? "Last capture: " +
+                              new Date(token.lastUsedAt).toLocaleString()
+                            : "Not used yet"}
+                      </small>
+                      {!token.revokedAt && (
+                        <button
+                          className="text-button danger-text"
+                          onClick={async () => {
+                            await remote("/clip-tokens/" + token.id, {
+                              method: "DELETE",
+                              body: "{}",
+                            });
+                            loadTokens();
+                          }}
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          </div>
+            </section>
+            {templates.length > 0 && (
+              <section className="settings-card">
+                <div className="settings-copy">
+                  <h3>Capture templates</h3>
+                  <div className="template-library">
+                    {templates.map((template) => (
+                      <div key={template.id}>
+                        <span>
+                          {template.name} · {template.kind}
+                        </span>
+                        <button
+                          className="icon-button danger-text"
+                          aria-label={"Delete " + template.name}
+                          onClick={async () => {
+                            await deleteTemplate(template.id);
+                            onTemplatesChange(
+                              templates.filter(
+                                (item) => item.id !== template.id,
+                              ),
+                            );
+                          }}
+                        >
+                          <Trash2 />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            )}
+          </>
         )}
-        <div className="settings-card">
-          <div className="settings-icon">
-            <Paperclip />
-          </div>
-          <div className="settings-copy">
-            <h3>Storage</h3>
-            <p>
-              {entries.reduce(
-                (total, entry) => total + entry.attachments.length,
-                0,
-              )}{" "}
-              attachments use approximately{" "}
-              {(attachmentBytes / 1024 / 1024).toFixed(1)} MB in the entries
-              currently loaded.
-            </p>
-          </div>
-        </div>
-        <AiPanel entries={entries} notify={notify} />
-        <Importer onComplete={onRefresh} notify={notify} />
-        <div className="settings-card">
-          <div className="settings-icon">
-            <Download />
-          </div>
-          <div className="settings-copy">
-            <h3>Export and backup</h3>
-            <p>
-              Download portable CSV, structured JSON, or a ZIP containing your
-              complete record and attachment files.
-            </p>
-            <div className="button-row">
-              <a
-                className="secondary-button"
-                href={exportUrl("csv")}
-                download="mindboss.csv"
-              >
-                <Download size={16} /> CSV
-              </a>
-              <a
-                className="secondary-button"
-                href={exportUrl("json")}
-                download="mindboss.json"
-              >
-                <Download size={16} /> JSON
-              </a>
-              <button
-                className="secondary-button"
-                disabled={backupBusy}
-                onClick={async () => {
-                  setBackupBusy(true);
-                  try {
-                    await downloadFullBackup();
-                    notify("Full backup downloaded.");
-                  } catch (error) {
-                    notify(
-                      error instanceof Error
-                        ? error.message
-                        : "Could not create the backup.",
-                    );
-                  } finally {
-                    setBackupBusy(false);
-                  }
-                }}
-              >
-                <Download size={16} />{" "}
-                {backupBusy ? "Building ZIP…" : "Full backup ZIP"}
-              </button>
-            </div>
-          </div>
-        </div>
-        <div className="settings-card account-card">
-          <div className="avatar">
-            <UserAvatar user={session.user} />
-          </div>
-          <div className="settings-copy">
-            <h3>{session.user?.login}</h3>
-            <p>
-              Authorized through GitHub ·{" "}
-              {preferences.displayTimezone.replaceAll("_", " ")}
-            </p>
-          </div>
-          <button
-            className="secondary-button"
-            onClick={async () => {
-              await logout();
-              location.reload();
-            }}
-          >
-            <LogOut size={16} /> Sign out
-          </button>
-        </div>
+        {section === "data" && (
+          <>
+            <section className="settings-card">
+              <div className="settings-copy">
+                <h3>Complete library storage</h3>
+                <p>
+                  {stats
+                    ? stats.entries +
+                      " entries · " +
+                      stats.attachments +
+                      " attachments · " +
+                      (stats.bytes / 1024 / 1024).toFixed(1) +
+                      " MB"
+                    : "Loading account totals…"}
+                </p>
+                <small>
+                  Includes archived and trashed entries. These totals do not
+                  depend on your current view or search.
+                </small>
+              </div>
+            </section>
+            <Importer onComplete={onRefresh} notify={notify} />
+            <section className="settings-card">
+              <div className="settings-copy">
+                <h3>Export and backup</h3>
+                <p>
+                  Exports include every entry in Inbox, Archive and Trash. JSON
+                  includes structure and metadata; ZIP also includes the actual
+                  attachment files.
+                </p>
+                <div className="button-row">
+                  <a
+                    className="secondary-button"
+                    href={exportUrl("csv")}
+                    download="mindboss.csv"
+                  >
+                    CSV
+                  </a>
+                  <a
+                    className="secondary-button"
+                    href={exportUrl("json")}
+                    download="mindboss.json"
+                  >
+                    JSON
+                  </a>
+                  <button
+                    className="primary-button"
+                    disabled={backupBusy}
+                    onClick={async () => {
+                      setBackupBusy(true);
+                      try {
+                        await downloadFullBackup();
+                        notify("Complete backup downloaded.");
+                      } catch (error) {
+                        notify((error as Error).message);
+                      } finally {
+                        setBackupBusy(false);
+                      }
+                    }}
+                  >
+                    {backupBusy ? "Building ZIP…" : "Full backup ZIP"}
+                  </button>
+                </div>
+              </div>
+            </section>
+            <RestorePanel notify={notify} onComplete={onRefresh} />
+          </>
+        )}
       </div>
     </section>
   );
@@ -2095,6 +2323,7 @@ export default function App() {
         "trash",
         "tags",
         "settings",
+        "ai",
       ].includes(requested)
       ? (requested as View)
       : "inbox";
@@ -2122,6 +2351,22 @@ export default function App() {
     sortOrder: "newest",
   });
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [detailsEntry, setDetailsEntry] = useState<Entry | null>(null);
+  const [showSync, setShowSync] = useState(false);
+  const [offline, setOffline] = useState(!navigator.onLine);
+  useEffect(() => {
+    const update = () => setOffline(!navigator.onLine);
+    const connection = (event: Event) =>
+      setOffline((event as CustomEvent<{ offline: boolean }>).detail.offline);
+    window.addEventListener("mindboss-connection", connection);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("mindboss-connection", connection);
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
@@ -2130,6 +2375,7 @@ export default function App() {
   const [pendingCount, setPendingCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const noticeTimer = useRef<number>();
+  const refreshSequence = useRef(0);
 
   const notify = useCallback((message: string) => {
     setNotice(message);
@@ -2164,7 +2410,12 @@ export default function App() {
     next === "archive" ? "archived" : next === "trash" ? "trashed" : "active";
   const refresh = useCallback(
     async (nextView = view, nextQuery = query) => {
-      if (["tags", "settings"].includes(nextView)) return;
+      const sequence = ++refreshSequence.current;
+      if (["tags", "settings", "ai"].includes(nextView)) {
+        setLoading(false);
+        setSyncing(false);
+        return;
+      }
       setLoading(true);
       setSyncing(true);
       try {
@@ -2174,24 +2425,27 @@ export default function App() {
             : nextView === "reminders"
               ? "reminder"
               : undefined;
-        setEntries(
-          await getEntries({
-            ...filters,
-            ...parseSearchQuery(nextQuery, tags),
-            status: statusForView(nextView),
-            kind,
-            tag: selectedTag || undefined,
-            sort,
-          }),
-        );
-        setLastSynced(new Date());
+        const loaded = await getEntries({
+          ...filters,
+          ...parseSearchQuery(nextQuery, tags),
+          status: statusForView(nextView),
+          kind: kind || parseSearchQuery(nextQuery, tags).kind || filters.kind,
+          tag:
+            selectedTag || parseSearchQuery(nextQuery, tags).tag || filters.tag,
+          sort,
+        });
+        if (sequence !== refreshSequence.current) return;
+        setEntries(loaded);
+        if (navigator.onLine && !usingCachedData) setLastSynced(new Date());
       } catch (error) {
         notify(
           error instanceof Error ? error.message : "Could not load entries.",
         );
       } finally {
-        setLoading(false);
-        setSyncing(false);
+        if (sequence === refreshSequence.current) {
+          setLoading(false);
+          setSyncing(false);
+        }
       }
     },
     [view, query, selectedTag, sort, filters, tags, notify],
@@ -2219,9 +2473,7 @@ export default function App() {
         if (targetEntryId) {
           const targetEntry = await getEntry(targetEntryId).catch(() => null);
           if (targetEntry) {
-            setDraft(
-              draftFromEntry(targetEntry, nextPreferences.displayTimezone),
-            );
+            setDetailsEntry(targetEntry);
             const url = new URL(location.href);
             url.searchParams.delete("entry");
             history.replaceState({}, "", url);
@@ -2250,7 +2502,7 @@ export default function App() {
 
   useEffect(() => {
     if (session?.authenticated) refresh();
-  }, [session, view, selectedTag, sort, filters]);
+  }, [session, view, selectedTag, sort, filters, tags]);
   useEffect(() => {
     if (!session?.authenticated) return;
     const timer = window.setTimeout(() => refresh(view, query), 220);
@@ -2260,7 +2512,7 @@ export default function App() {
     const entryId = new URLSearchParams(location.search).get("entry");
     const entry = entryId ? entries.find((item) => item.id === entryId) : null;
     if (!entry || draft) return;
-    setDraft(draftFromEntry(entry, preferences.displayTimezone));
+    setDetailsEntry(entry);
     const url = new URL(location.href);
     url.searchParams.delete("entry");
     history.replaceState({}, "", url);
@@ -2291,40 +2543,52 @@ export default function App() {
       navigator.serviceWorker.removeEventListener("message", handleMessage);
   }, [refresh]);
   useEffect(() => {
-    const online = async () => {
-      const queued = await drainOutbox().catch(() => []);
-      setPendingCount(queued.length);
-      setSyncing(queued.length > 0);
-      let synchronized = 0;
-      for (const item of queued) {
-        try {
-          const stored =
-            "input" in item
-              ? (item as { input: EntryInput; files?: PreparedAttachment[] })
-              : { input: item as unknown as EntryInput, files: [] };
-          let saved = await createEntry(stored.input);
-          for (const upload of stored.files || []) {
-            const prepared = upload as unknown as PreparedAttachment;
-            saved = await addAttachment(
-              saved.id,
-              prepared.file,
-              prepared.extractedText,
-            );
-          }
-          synchronized += 1;
-        } catch {
-          await saveOutbox(item);
-        }
-      }
-      if (synchronized) {
-        notify(
-          `${synchronized} offline capture${synchronized === 1 ? "" : "s"} synchronized.`,
+    const online = () =>
+      withSyncLock(async () => {
+        if (!navigator.onLine) return;
+        const currentSession = await getSession().catch(() => null);
+        if (!currentSession?.authenticated || currentSession.offline) return;
+        setSession((previous) =>
+          previous?.offline ? currentSession : previous,
         );
-        refresh();
-      }
-      setPendingCount(await outboxCount().catch(() => 0));
-      setSyncing(false);
-    };
+        const queued = await drainOutbox().catch(() => []);
+        setPendingCount(queued.length);
+        setSyncing(queued.length > 0);
+        let synchronized = 0;
+        for (const item of queued) {
+          try {
+            const stored =
+              "input" in item
+                ? (item as { input: EntryInput; files?: PreparedAttachment[] })
+                : { input: item as unknown as EntryInput, files: [] };
+            let saved = await createEntry(stored.input);
+            for (const upload of stored.files || []) {
+              const prepared = upload as unknown as PreparedAttachment;
+              saved = await addAttachment(
+                saved.id,
+                prepared.file,
+                prepared.extractedText,
+              );
+            }
+            await acknowledgeOutbox(String(item.id));
+            synchronized += 1;
+          } catch (error) {
+            await saveOutbox({
+              ...item,
+              error:
+                error instanceof Error ? error.message : "Waiting to retry",
+            });
+          }
+        }
+        if (synchronized) {
+          notify(
+            `${synchronized} offline capture${synchronized === 1 ? "" : "s"} synchronized.`,
+          );
+          refresh();
+        }
+        setPendingCount(await outboxCount().catch(() => 0));
+        setSyncing(false);
+      });
     if (navigator.onLine) void online();
     window.addEventListener("online", online);
     return () => window.removeEventListener("online", online);
@@ -2333,6 +2597,7 @@ export default function App() {
   const openSharedCapture = (share: SharedCapture) =>
     setDraft({
       ...freshDraft("note"),
+      id: share.id,
       source: "android_share",
       title: share.title,
       body: share.text,
@@ -2345,17 +2610,54 @@ export default function App() {
         previewUrl: URL.createObjectURL(file),
       })),
     });
+  useEffect(() => {
+    const pop = () => {
+      const requested = new URLSearchParams(location.search).get("view");
+      if (
+        requested &&
+        [
+          "today",
+          "inbox",
+          "lists",
+          "reminders",
+          "review",
+          "archive",
+          "trash",
+          "tags",
+          "settings",
+          "ai",
+        ].includes(requested)
+      )
+        setView(requested as View);
+    };
+    window.addEventListener("popstate", pop);
+    return () => window.removeEventListener("popstate", pop);
+  }, []);
+  const openDetails = (entry: Entry) => {
+    setDetailsEntry(entry);
+    void getEntry(entry.id)
+      .then(setDetailsEntry)
+      .catch((error) => notify(error.message));
+  };
   const switchView = (next: View) => {
+    history.pushState({}, "", "?view=" + next);
     setView(next);
+    setQuery("");
     setSelectedTag("");
     if (!["inbox", "lists", "reminders"].includes(next)) setFilters({});
     setMobileNav(false);
   };
-  const openNew = (kind?: Entry["kind"]) => {
-    const saved = loadDraft<Omit<Draft, "files">>();
+  const openNew = async (kind?: Entry["kind"]) => {
+    const saved = await loadDraft<Draft>();
     setDraft(
-      saved && !saved.editing
-        ? { ...saved, files: [] }
+      saved
+        ? {
+            ...saved,
+            files: (saved.files || []).map((item) => ({
+              ...item,
+              previewUrl: URL.createObjectURL(item.file),
+            })),
+          }
         : freshDraft(kind || preferences.defaultCaptureKind),
     );
   };
@@ -2377,7 +2679,7 @@ export default function App() {
         event.preventDefault();
         openNew();
       }
-      if (event.key === "Escape" && draft && !conflict) setDraft(null);
+      // Native dialogs handle Escape and retain the local draft.
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
@@ -2387,7 +2689,10 @@ export default function App() {
     const input: EntryInput = {
       id: value.id,
       kind: value.kind,
-      title: value.title,
+      title:
+        value.title ||
+        (!value.body && value.files.length ? value.files[0].file.name : "") ||
+        (!value.body && value.sourceUrl ? "Saved link" : ""),
       body: value.body,
       source: value.source,
       sourceUrl: value.sourceUrl || null,
@@ -2400,36 +2705,64 @@ export default function App() {
         .filter((item) => item.text.trim())
         .map((item, position) => ({ ...item, position })),
     };
+    let queued = false;
     try {
-      let saved = value.editing
-        ? await updateEntry(value.id, {
-            ...input,
-            version: value.editing.version,
-          })
-        : await createEntry(input);
-      for (const upload of value.files)
-        saved = await addAttachment(
-          saved.id,
-          upload.file,
-          upload.extractedText,
-        );
-      setDraft(null);
-      clearDraft();
-      notify(value.editing ? "Entry updated." : "Captured.");
-      await refresh();
-      return true;
-    } catch (error) {
-      if (!navigator.onLine && !value.editing) {
+      if (!value.editing) {
         await saveOutbox({
           id: input.id,
           input,
           files: value.files,
           queuedAt: new Date().toISOString(),
         });
-        setPendingCount(await outboxCount().catch(() => 1));
+        queued = true;
+      }
+      await withSyncLock(async () => {
+        let saved = value.editing
+          ? await updateEntry(value.id, {
+              ...input,
+              version: value.editing.version,
+            })
+          : await createEntry(input);
+        if (value.editing) {
+          value = { ...value, editing: saved };
+          setDraft(value);
+          await saveDraft(value);
+        }
+        for (const upload of value.files)
+          saved = await addAttachment(
+            saved.id,
+            upload.file,
+            upload.extractedText,
+          );
+        if (queued) await acknowledgeOutbox(input.id);
+      });
+      setPendingCount(await outboxCount());
+      setDraft(null);
+      await clearDraft();
+      notify(
+        value.editing
+          ? "Changes saved to your account."
+          : "Saved to your account.",
+      );
+      await refresh();
+      return true;
+    } catch (error) {
+      if (queued) {
+        await saveOutbox({
+          id: input.id,
+          input,
+          files: value.files,
+          queuedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : "Waiting to sync",
+        });
+        setPendingCount(await outboxCount());
         setDraft(null);
-        clearDraft();
-        notify("Saved offline. Mind Boss will sync when you reconnect.");
+        await clearDraft();
+        notify(
+          error instanceof ApiError && error.status === 401
+            ? "Saved on this device. Sign in again to sync."
+            : "Saved on this device. Waiting to sync; your files are retained.",
+        );
         return true;
       }
       if (
@@ -2484,7 +2817,11 @@ export default function App() {
     changes: Record<string, unknown>,
   ) => {
     try {
-      await updateEntry(entry.id, changes);
+      const saved = await updateEntry(entry.id, {
+        ...changes,
+        version: entry.version,
+      });
+      if (detailsEntry?.id === saved.id) setDetailsEntry(saved);
       await refresh();
     } catch (error) {
       notify(
@@ -2525,17 +2862,17 @@ export default function App() {
 
   const title =
     view === "today"
-      ? "Your day, already gathered"
+      ? "Today"
       : view === "inbox"
-        ? "Everything worth keeping"
+        ? "Inbox"
         : view === "lists"
-          ? "Lists that move"
+          ? "Lists"
           : view === "reminders"
-            ? "Bring it back on time"
+            ? "Reminders"
             : view === "review"
-              ? "Reconnect with what matters"
+              ? "Review"
               : view === "archive"
-                ? "The quiet archive"
+                ? "Archive"
                 : view === "trash"
                   ? "Recently deleted"
                   : view === "tags"
@@ -2571,6 +2908,16 @@ export default function App() {
         })
       : entries;
 
+  const weeklyDue =
+    new Date(
+      dateKeyForTimeZone(new Date(), preferences.displayTimezone) +
+        "T12:00:00Z",
+    ).getUTCDay() === preferences.weeklyReviewDay &&
+    (!preferences.lastWeeklyReviewAt ||
+      dateKeyForTimeZone(
+        preferences.lastWeeklyReviewAt,
+        preferences.displayTimezone,
+      ) !== dateKeyForTimeZone(new Date(), preferences.displayTimezone));
   return (
     <div
       className={`app-shell ${preferences.compactView ? "compact-mode" : ""}`}
@@ -2639,7 +2986,11 @@ export default function App() {
             <Settings size={18} />
             Settings
           </button>
-          <div className="privacy-note">
+          <button
+            className="privacy-note"
+            onClick={() => setShowSync(true)}
+            aria-label="Open sync status"
+          >
             <span className={`status-dot ${pendingCount ? "pending" : ""}`} />
             {syncing
               ? "Syncing…"
@@ -2647,8 +2998,10 @@ export default function App() {
                 ? `${pendingCount} waiting to sync`
                 : lastSynced
                   ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
-                  : "Private · Synced"}
-          </div>
+                  : offline
+                    ? "Offline · saved on device"
+                    : "Account connected"}
+          </button>
         </div>
       </aside>
       {mobileNav && (
@@ -2685,7 +3038,10 @@ export default function App() {
           <button
             className="icon-button sync-button"
             aria-label="Refresh and synchronize"
-            onClick={() => void refresh()}
+            onClick={() => {
+              window.dispatchEvent(new Event("online"));
+              void refresh();
+            }}
           >
             <RefreshCw className={syncing ? "spin" : ""} />
           </button>
@@ -2698,7 +3054,40 @@ export default function App() {
           </button>
         </header>
         <div className="content-shell">
-          {view === "tags" ? (
+          {(offline || session.offline || pendingCount > 0) && (
+            <div className="sync-banner" role="status">
+              <WifiOff size={18} />
+              <span>
+                {offline || session.offline
+                  ? "Offline access. New captures stay on this device until you reconnect."
+                  : `${pendingCount} capture(s) saved on this device, waiting to sync.`}
+              </span>
+              <button onClick={() => setShowSync(true)}>Details / retry</button>
+            </div>
+          )}
+          {view === "ai" ? (
+            <AiWorkspace
+              notify={notify}
+              onSave={(text, kind) => {
+                const next = freshDraft(kind);
+                next.title = "AI workspace result";
+                if (kind === "note") next.body = text;
+                else
+                  next.listItems = text
+                    .split("\n")
+                    .map((line) => line.replace(/^[-*\d.)\s]+/, "").trim())
+                    .filter(Boolean)
+                    .map((text, position) => ({
+                      id: crypto.randomUUID(),
+                      text,
+                      position,
+                      dueAt: null,
+                      completedAt: null,
+                    }));
+                setDraft(next);
+              }}
+            />
+          ) : view === "tags" ? (
             <TagsPanel tags={tags} onChange={setTags} notify={notify} />
           ) : view === "settings" ? (
             <SettingsPanel
@@ -2733,34 +3122,31 @@ export default function App() {
                   </p>
                 </div>
                 <div className="heading-actions">
-                  {view !== "review" && (
+                  {!["review", "today", "trash", "archive"].includes(view) && (
                     <ViewControls
                       preferences={preferences}
                       onChange={updateLayoutPreferences}
                     />
                   )}
-                  <button
-                    className="primary-button"
-                    onClick={() =>
-                      openNew(
-                        view === "lists"
-                          ? "list"
-                          : view === "reminders"
-                            ? "reminder"
-                            : "note",
-                      )
-                    }
-                  >
-                    <Plus size={17} /> Add
-                  </button>
+                  {!["trash", "archive"].includes(view) && (
+                    <button
+                      className="primary-button"
+                      onClick={() =>
+                        openNew(
+                          view === "lists"
+                            ? "list"
+                            : view === "reminders"
+                              ? "reminder"
+                              : "note",
+                        )
+                      }
+                    >
+                      <Plus size={17} /> Add
+                    </button>
+                  )}
                 </div>
               </section>
-              {view === "today" && (
-                <TodaySummary
-                  entries={entries}
-                  timeZone={preferences.displayTimezone}
-                />
-              )}
+
               {["inbox", "lists", "reminders", "archive", "trash"].includes(
                 view,
               ) && (
@@ -2785,19 +3171,56 @@ export default function App() {
                   </button>
                 </div>
               )}
+              {weeklyDue && ["today", "review"].includes(view) && (
+                <div className="weekly-review-banner">
+                  <span>
+                    It’s your weekly review day. Revisit older ideas and clear
+                    what no longer needs attention.
+                  </span>
+                  <button
+                    className="secondary-button"
+                    onClick={() => switchView("review")}
+                  >
+                    Open review
+                  </button>
+                  <button
+                    className="text-button"
+                    onClick={() =>
+                      void savePreferences({ lastWeeklyReviewAt: "now" }).then(
+                        setPreferences,
+                      )
+                    }
+                  >
+                    Mark reviewed
+                  </button>
+                </div>
+              )}
               {loading ? (
                 <div className="feed-loading">
                   {[1, 2, 3].map((item) => (
                     <span key={item} />
                   ))}
                 </div>
+              ) : view === "today" ? (
+                <TodayWorkspace
+                  entries={entries}
+                  timeZone={preferences.displayTimezone}
+                  renderEntry={(entry) => (
+                    <EntryCard
+                      key={entry.id}
+                      entry={entry}
+                      timeZone={preferences.displayTimezone}
+                      onEdit={openDetails}
+                      onChange={changeEntry}
+                      onDeletePermanently={permanentlyDelete}
+                    />
+                  )}
+                />
               ) : view === "review" ? (
                 <ReviewQueue
                   entries={entries}
                   timeZone={preferences.displayTimezone}
-                  onOpen={(entry) =>
-                    setDraft(draftFromEntry(entry, preferences.displayTimezone))
-                  }
+                  onOpen={openDetails}
                   onReviewLater={(entry) =>
                     void changeEntry(entry, {
                       version: entry.version,
@@ -2813,9 +3236,21 @@ export default function App() {
                   tags={tags}
                   preferences={preferences}
                   onPreferences={updateLayoutPreferences}
-                  onOpen={(entry) =>
-                    setDraft(draftFromEntry(entry, preferences.displayTimezone))
-                  }
+                  onAdd={(date) => {
+                    const next = freshDraft("reminder");
+                    next.reminderAt = localInstant(
+                      date,
+                      9,
+                      0,
+                      preferences.displayTimezone,
+                    ).toISOString();
+                    next.reminderText = formatDateTime(
+                      next.reminderAt,
+                      preferences.displayTimezone,
+                    );
+                    setDraft(next);
+                  }}
+                  onOpen={openDetails}
                   onMove={(entry, tagId) => {
                     const tagIds = entry.tags
                       .map((tag) => tag.id)
@@ -2831,11 +3266,7 @@ export default function App() {
                       key={entry.id}
                       entry={entry}
                       timeZone={preferences.displayTimezone}
-                      onEdit={(item) =>
-                        setDraft(
-                          draftFromEntry(item, preferences.displayTimezone),
-                        )
-                      }
+                      onEdit={openDetails}
                       onChange={changeEntry}
                       onDeletePermanently={permanentlyDelete}
                     />
@@ -2860,7 +3291,7 @@ export default function App() {
         </div>
       </main>
       <nav className="mobile-tabs" aria-label="Mobile navigation">
-        {[NAV_ITEMS[0], NAV_ITEMS[1], NAV_ITEMS[3]].map(
+        {[NAV_ITEMS[0], NAV_ITEMS[2], NAV_ITEMS[3]].map(
           ({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -2887,6 +3318,34 @@ export default function App() {
           <span>Settings</span>
         </button>
       </nav>
+      {showSync && (
+        <SyncPanel
+          onClose={() => setShowSync(false)}
+          onRetry={() => window.dispatchEvent(new Event("online"))}
+        />
+      )}
+      {detailsEntry && !draft && (
+        <EntryDetails
+          entry={detailsEntry}
+          timeZone={preferences.displayTimezone}
+          onClose={() => setDetailsEntry(null)}
+          onEdit={() => {
+            setDraft(draftFromEntry(detailsEntry, preferences.displayTimezone));
+            setDetailsEntry(null);
+          }}
+          onChange={changeEntry}
+          onRemind={(text, date) => {
+            const next = freshDraft("reminder");
+            next.title = text;
+            next.reminderAt = date;
+            next.reminderText = date
+              ? formatDateTime(date, preferences.displayTimezone)
+              : "";
+            setDetailsEntry(null);
+            setDraft(next);
+          }}
+        />
+      )}
       {draft && (
         <Composer
           draft={draft}

@@ -32,7 +32,7 @@ async function initialize() {
     return;
   }
   await showCapture();
-  chrome.runtime.sendMessage({ type: "flushQueue" });
+  await retryQueued();
 }
 
 function showSetup() {
@@ -74,7 +74,7 @@ async function showCapture() {
 elements.connect.addEventListener("click", async () => {
   const endpoint = elements.endpoint.value.trim().replace(/\/$/, "");
   const token = elements.token.value.trim();
-  if (!/^https:\/\//.test(endpoint) || !token.startsWith("mbc_")) {
+  if (endpoint !== "https://mindboss.st-dba.com" || !token.startsWith("mbc_")) {
     showStatus("Enter the HTTPS app address and a valid mbc_ token.", "error");
     return;
   }
@@ -84,6 +84,7 @@ elements.connect.addEventListener("click", async () => {
   });
   elements.token.value = "";
   await showCapture();
+  await retryQueued();
 });
 
 elements.settings.addEventListener("click", showSetup);
@@ -129,3 +130,21 @@ function showStatus(message, kind) {
   elements.status.textContent = message;
   elements.status.className = kind;
 }
+async function retryQueued() {
+  const result = await chrome.runtime.sendMessage({ type: "flushQueue" });
+  if (result?.remaining)
+    showStatus(
+      `${result.remaining} capture(s) waiting to sync. ${result.message || ""}`,
+      "warning",
+    );
+  else if (result?.sent)
+    showStatus(
+      `${result.sent} queued capture(s) saved to your account.`,
+      "success",
+    );
+}
+window.addEventListener("online", () => void retryQueued());
+const retry = document.createElement("button");
+retry.textContent = "Retry queued captures";
+retry.addEventListener("click", () => void retryQueued());
+document.body.append(retry);

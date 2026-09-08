@@ -9,10 +9,20 @@ chrome.runtime.onInstalled.addListener(() => {
       contexts: ["page", "selection", "link", "image"],
     });
   });
+  chrome.alarms.create("mindboss-retry", { periodInMinutes: 1 });
   flushQueue();
 });
 
 chrome.runtime.onStartup.addListener(flushQueue);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "mindboss-retry") void flushQueue();
+});
+let queueOperation = Promise.resolve();
+function serialized(action) {
+  const next = queueOperation.then(action, action);
+  queueOperation = next.catch(() => undefined);
+  return next;
+}
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== MENU_ID || !tab?.url) return;
@@ -34,7 +44,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     sourceTitle: tab.title || "",
     tagNames: [],
   });
-  setBadge(result.queued ? "…" : "✓", result.queued ? "#f9c76b" : "#41e2b7");
+  setBadge(
+    !result.ok ? "!" : result.queued ? "…" : "✓",
+    !result.ok || result.queued ? "#f9c76b" : "#41e2b7",
+  );
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -66,6 +79,8 @@ async function getConfig() {
 
 async function postClip(payload) {
   const { endpoint, token } = await getConfig();
+  if (endpoint !== DEFAULT_ENDPOINT)
+    throw new Error("Only the Mind Boss app address is supported.");
   if (!token)
     throw new Error("Open the clipper and connect it to Mind Boss first.");
   const response = await fetch(`${endpoint}/api/v1/clips`, {
@@ -91,48 +106,74 @@ async function postClip(payload) {
   return response.json();
 }
 
-async function saveClip(payload) {
-  try {
-    await postClip(payload);
-    return { ok: true, queued: false };
-  } catch (error) {
-    if (error.permanent)
-      return { ok: false, queued: false, message: error.message };
+function saveClip(payload) {
+  return serialized(async () => {
     const stored = await chrome.storage.local.get("mindbossQueue");
     const queue = Array.isArray(stored.mindbossQueue)
       ? stored.mindbossQueue
       : [];
+    if (queue.length >= 500)
+      return {
+        ok: false,
+        queued: false,
+        message:
+          "The clip queue is full. Open the clipper and retry existing captures first. Nothing was discarded.",
+      };
     if (!queue.some((item) => item.id === payload.id)) queue.push(payload);
-    await chrome.storage.local.set({ mindbossQueue: queue.slice(-100) });
-    return {
-      ok: true,
-      queued: true,
-      message: "Saved offline. The clipper will retry next time Chrome starts.",
-    };
-  }
-}
-
-async function flushQueue() {
-  const stored = await chrome.storage.local.get("mindbossQueue");
-  const queue = Array.isArray(stored.mindbossQueue) ? stored.mindbossQueue : [];
-  if (!queue.length) return { sent: 0, remaining: 0 };
-  const remaining = [];
-  let sent = 0;
-  for (const payload of queue) {
+    await chrome.storage.local.set({ mindbossQueue: queue });
     try {
       await postClip(payload);
-      sent += 1;
+      await chrome.storage.local.set({
+        mindbossQueue: queue.filter((item) => item.id !== payload.id),
+      });
+      return { ok: true, queued: false };
     } catch (error) {
-      if (!error.permanent) remaining.push(payload);
+      payload.queueError = error.message;
+      await chrome.storage.local.set({ mindbossQueue: queue });
+      return {
+        ok: true,
+        queued: true,
+        message:
+          "Saved on this device, not yet in your account. " +
+          error.message +
+          " Retry from the clipper after reconnecting.",
+      };
     }
-  }
-  await chrome.storage.local.set({ mindbossQueue: remaining });
-  if (sent) setBadge("✓", "#41e2b7");
-  return { sent, remaining: remaining.length };
+  });
+}
+
+function flushQueue() {
+  return serialized(async () => {
+    const stored = await chrome.storage.local.get("mindbossQueue");
+    const queue = Array.isArray(stored.mindbossQueue)
+      ? stored.mindbossQueue
+      : [];
+    let sent = 0;
+    const remaining = [];
+    for (const payload of queue) {
+      try {
+        await postClip(payload);
+        sent++;
+      } catch (error) {
+        remaining.push({ ...payload, queueError: error.message });
+      }
+    }
+    await chrome.storage.local.set({ mindbossQueue: remaining });
+    setBadge(
+      remaining.length ? String(remaining.length) : sent ? "✓" : "",
+      remaining.length ? "#f9c76b" : "#41e2b7",
+    );
+    return {
+      sent,
+      remaining: remaining.length,
+      message: remaining[0]?.queueError,
+    };
+  });
 }
 
 function setBadge(text, color) {
   chrome.action.setBadgeBackgroundColor({ color });
   chrome.action.setBadgeText({ text });
-  setTimeout(() => chrome.action.setBadgeText({ text: "" }), 1800);
+  if (text === "✓")
+    setTimeout(() => chrome.action.setBadgeText({ text: "" }), 1800);
 }

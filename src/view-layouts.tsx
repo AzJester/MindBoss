@@ -10,7 +10,8 @@ import {
   StretchHorizontal,
 } from "lucide-react";
 import type { Entry, LayoutMode, Tag, UserPreferences } from "../shared/types";
-import { dateKeyForTimeZone } from "./reminders";
+import { Modal } from "./ui";
+import { formatDateTime, dateKeyForTimeZone } from "./reminders";
 
 const LAYOUTS: Array<{
   id: LayoutMode;
@@ -20,7 +21,7 @@ const LAYOUTS: Array<{
   { id: "feed", label: "Feed", icon: Rows3 },
   { id: "board", label: "Board", icon: Columns3 },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
-  { id: "flex", label: "Flex", icon: StretchHorizontal },
+  { id: "flex", label: "Grid", icon: StretchHorizontal },
 ];
 
 function relativeGroup(value: string, timeZone: string): string {
@@ -59,6 +60,7 @@ export function ViewControls({
             className={preferences.viewMode === id ? "active" : ""}
             onClick={() => onChange({ viewMode: id })}
             aria-pressed={preferences.viewMode === id}
+            aria-label={label}
           >
             <Icon size={15} />
             <span>{label}</span>
@@ -344,85 +346,93 @@ function CalendarView({
   entries,
   timeZone,
   onOpen,
+  onAdd,
 }: {
   entries: Entry[];
   timeZone: string;
   onOpen: (entry: Entry) => void;
+  onAdd: (date: string) => void;
 }) {
-  const currentParts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "numeric",
-  }).formatToParts(new Date());
-  const initialYear = Number(
-    currentParts.find((part) => part.type === "year")?.value,
+  const today = dateKeyForTimeZone(new Date(), timeZone);
+  const [month, setMonth] = useState(today.slice(0, 7)),
+    [selectedDay, setSelectedDay] = useState<string | null>(null),
+    [showCompleted, setShowCompleted] = useState(false);
+  const [year, monthNumber] = month.split("-").map(Number);
+  const [mode, setMode] = useState<"month" | "agenda">(() =>
+    matchMedia("(max-width: 700px)").matches ? "agenda" : "month",
   );
-  const initialMonth =
-    Number(currentParts.find((part) => part.type === "month")?.value) - 1;
-  const [cursor, setCursor] = useState({
-    year: initialYear,
-    month: initialMonth,
-  });
   const move = (amount: number) => {
-    const next = new Date(Date.UTC(cursor.year, cursor.month + amount, 1));
-    setCursor({ year: next.getUTCFullYear(), month: next.getUTCMonth() });
+    const date = new Date(Date.UTC(year, monthNumber - 1 + amount, 1));
+    setMonth(date.toISOString().slice(0, 7));
   };
-  const events = useMemo(() => {
-    const result: CalendarEvent[] = [];
-    for (const entry of entries) {
-      if (entry.reminderAt)
-        result.push({
-          id: `${entry.id}-reminder`,
+  const events: Array<CalendarEvent & { completed: boolean }> = [];
+  for (const entry of entries) {
+    if (entry.reminderAt)
+      events.push({
+        id: entry.id + "-reminder",
+        entry,
+        label: entry.title || entry.body || "Reminder",
+        date: entry.reminderAt,
+        tone: "reminder",
+        completed: entry.reminderState === "completed",
+      });
+    if (entry.reviewAt)
+      events.push({
+        id: entry.id + "-review",
+        entry,
+        label: "Review: " + (entry.title || "entry"),
+        date: entry.reviewAt,
+        tone: "review",
+        completed: false,
+      });
+    for (const item of entry.listItems)
+      if (item.dueAt)
+        events.push({
+          id: item.id,
           entry,
-          date: entry.reminderAt,
-          label: entry.title || entry.body || "Reminder",
-          tone: "reminder",
-        });
-      if (entry.reviewAt)
-        result.push({
-          id: `${entry.id}-review`,
-          entry,
-          date: entry.reviewAt,
-          label: `Review: ${entry.title || entry.body || "entry"}`,
-          tone: "review",
-        });
-      for (const item of entry.listItems.filter((item) => item.dueAt))
-        result.push({
-          id: `${entry.id}-${item.id}`,
-          entry,
-          date: item.dueAt!,
           label: item.text,
+          date: item.dueAt,
           tone: "list",
+          completed: Boolean(item.completedAt),
         });
-      if (
-        !entry.reminderAt &&
-        !entry.reviewAt &&
-        !entry.listItems.some((item) => item.dueAt)
-      )
-        result.push({
-          id: `${entry.id}-capture`,
-          entry,
-          date: entry.createdAt,
-          label: entry.title || entry.body || "Captured entry",
-          tone: "capture",
-        });
-    }
-    return result;
-  }, [entries]);
-  const firstDay = new Date(Date.UTC(cursor.year, cursor.month, 1)).getUTCDay();
-  const daysInMonth = new Date(
-    Date.UTC(cursor.year, cursor.month + 1, 0),
-  ).getUTCDate();
-  const cells = Array.from({ length: 42 }, (_, index) => {
-    const day = index - firstDay + 1;
-    return day >= 1 && day <= daysInMonth ? day : null;
-  });
-  const monthLabel = new Intl.DateTimeFormat("en-US", {
+  }
+  const visible = events
+    .filter((event) => showCompleted || !event.completed)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const monthEvents = visible.filter((event) =>
+    dateKeyForTimeZone(event.date, timeZone).startsWith(month),
+  );
+  const firstDay = new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay();
+  const count = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const label = new Intl.DateTimeFormat("en-US", {
     timeZone: "UTC",
     month: "long",
     year: "numeric",
-  }).format(new Date(Date.UTC(cursor.year, cursor.month, 1)));
-  const today = dateKeyForTimeZone(new Date(), timeZone);
+  }).format(new Date(Date.UTC(year, monthNumber - 1, 1)));
+  const renderEvent = (event: (typeof visible)[number]) => (
+    <button
+      key={event.id}
+      className={
+        "calendar-event " + event.tone + (event.completed ? " completed" : "")
+      }
+      onClick={() => {
+        setSelectedDay(null);
+        onOpen(event.entry);
+      }}
+    >
+      <span>
+        {event.completed ? "✓ " : ""}
+        {event.label}
+      </span>
+      <small>
+        {event.tone === "list"
+          ? "Task due"
+          : event.tone === "review"
+            ? "Review"
+            : formatDateTime(event.date, timeZone)}
+      </small>
+    </button>
+  );
   return (
     <section className="calendar-view">
       <header className="calendar-toolbar">
@@ -430,64 +440,162 @@ function CalendarView({
           <button aria-label="Previous month" onClick={() => move(-1)}>
             <ChevronLeft />
           </button>
-          <button
-            onClick={() =>
-              setCursor({ year: initialYear, month: initialMonth })
-            }
-          >
-            Today
-          </button>
+          <button onClick={() => setMonth(today.slice(0, 7))}>Today</button>
           <button aria-label="Next month" onClick={() => move(1)}>
             <ChevronRight />
           </button>
         </div>
-        <h2>{monthLabel}</h2>
-        <span>{timeZone.replace("_", " ")}</span>
+        <h2>{label}</h2>
+        <div className="choice-row">
+          <button
+            aria-pressed={mode === "month"}
+            onClick={() => setMode("month")}
+          >
+            Month
+          </button>
+          <button
+            aria-pressed={mode === "agenda"}
+            onClick={() => setMode("agenda")}
+          >
+            Agenda
+          </button>
+        </div>
       </header>
-      <div className="calendar-grid" role="grid" aria-label={monthLabel}>
-        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-          <strong key={day} className="calendar-weekday">
-            {day}
-          </strong>
-        ))}
-        {cells.map((day, index) => {
-          const key = day
-            ? `${cursor.year}-${String(cursor.month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-            : `blank-${index}`;
-          const dayEvents = day
-            ? events.filter(
-                (event) => dateKeyForTimeZone(event.date, timeZone) === key,
-              )
-            : [];
-          return (
-            <div
-              key={key}
-              className={`calendar-day ${key === today ? "today" : ""} ${day ? "" : "blank"}`}
-              role="gridcell"
-            >
-              {day && <time dateTime={key}>{day}</time>}
-              {dayEvents.slice(0, 4).map((event) => (
-                <button
-                  key={event.id}
-                  className={`calendar-event ${event.tone}`}
-                  onClick={() => onOpen(event.entry)}
-                  title={event.label}
-                >
-                  {event.label}
-                </button>
-              ))}
-              {dayEvents.length > 4 && (
-                <small>+{dayEvents.length - 4} more</small>
-              )}
-            </div>
-          );
-        })}
+      <div className="calendar-options">
+        <span>
+          {timeZone.replaceAll("_", " ")} · reminders, reviews and task dates
+        </span>
+        <label>
+          <input
+            type="checkbox"
+            checked={showCompleted}
+            onChange={(event) => setShowCompleted(event.target.checked)}
+          />{" "}
+          Show completed
+        </label>
       </div>
+      {mode === "agenda" ? (
+        <div className="calendar-agenda">
+          {monthEvents.length ? (
+            [
+              ...new Set(
+                monthEvents.map((event) =>
+                  dateKeyForTimeZone(event.date, timeZone),
+                ),
+              ),
+            ].map((day) => (
+              <section key={day}>
+                <header>
+                  <h3>{day}</h3>
+                  <button className="text-button" onClick={() => onAdd(day)}>
+                    + Reminder
+                  </button>
+                </header>
+                {monthEvents
+                  .filter(
+                    (event) => dateKeyForTimeZone(event.date, timeZone) === day,
+                  )
+                  .map(renderEvent)}
+              </section>
+            ))
+          ) : (
+            <div className="empty-state compact-empty">
+              <h3>Nothing scheduled this month</h3>
+              <button
+                className="primary-button"
+                onClick={() =>
+                  onAdd(month === today.slice(0, 7) ? today : month + "-01")
+                }
+              >
+                Add a reminder
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="calendar-grid" aria-label={label}>
+          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+            <strong className="calendar-weekday" key={day}>
+              {day}
+            </strong>
+          ))}
+          {Array.from(
+            { length: Math.ceil((firstDay + count) / 7) * 7 },
+            (_, index) => {
+              const day = index - firstDay + 1;
+              if (day < 1 || day > count)
+                return (
+                  <div key={"blank" + index} className="calendar-day blank" />
+                );
+              const key = month + "-" + String(day).padStart(2, "0");
+              const dayEvents = visible.filter(
+                (event) => dateKeyForTimeZone(event.date, timeZone) === key,
+              );
+              return (
+                <div
+                  className={"calendar-day " + (key === today ? "today" : "")}
+                  key={key}
+                >
+                  <button
+                    className="calendar-day-number"
+                    aria-label={"Open " + key}
+                    onClick={() => setSelectedDay(key)}
+                  >
+                    {day}
+                  </button>
+                  {dayEvents.slice(0, 3).map(renderEvent)}
+                  {dayEvents.length > 3 && (
+                    <button
+                      className="calendar-more"
+                      onClick={() => setSelectedDay(key)}
+                    >
+                      +{dayEvents.length - 3} more
+                    </button>
+                  )}
+                </div>
+              );
+            },
+          )}
+        </div>
+      )}
+      {selectedDay && (
+        <Modal
+          label={"Schedule for " + selectedDay}
+          onClose={() => setSelectedDay(null)}
+          className="day-panel"
+        >
+          <h2>{selectedDay}</h2>
+          {visible
+            .filter(
+              (event) =>
+                dateKeyForTimeZone(event.date, timeZone) === selectedDay,
+            )
+            .map(renderEvent)}
+          <div className="button-row">
+            <button
+              className="primary-button"
+              onClick={() => {
+                onAdd(selectedDay);
+                setSelectedDay(null);
+              }}
+            >
+              Add a reminder
+            </button>
+            <button
+              className="secondary-button"
+              onClick={() => setSelectedDay(null)}
+            >
+              Close
+            </button>
+          </div>
+        </Modal>
+      )}
     </section>
   );
 }
 
 export function EntryLayouts({
+  onAdd,
   entries,
   tags,
   preferences,
@@ -503,6 +611,7 @@ export function EntryLayouts({
   onOpen: (entry: Entry) => void;
   onMove: (entry: Entry, tagId: string | null) => void;
   onPreferences: (changes: Partial<UserPreferences>) => void;
+  onAdd: (date: string) => void;
 }) {
   if (preferences.viewMode === "board")
     return (
@@ -521,6 +630,7 @@ export function EntryLayouts({
         entries={entries}
         timeZone={preferences.displayTimezone}
         onOpen={onOpen}
+        onAdd={onAdd}
       />
     );
   const className =

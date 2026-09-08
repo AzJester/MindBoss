@@ -2,9 +2,15 @@
   "manifest_version": 3,
   "name": "Mind Boss Clipper",
   "description": "Save the current page, selected text, and a quick note to your private Mind Boss inbox.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlp1y+CpznTtAWkB6xgD/CHXdh0jrdI/pkrfTUtH/NXvLXkPDRU+9+UTLkgxjHoAuolC8kOdad4E9XzjZ4sRKvIlcpJSj3zR65tqAnH0zyrSCyPbSnLkMu32tKYQnYe6DEtlgk2mQXSaXrXQI4QKgffNXUj36cPnn5HvtS5SjI9EyxMepZkhaNob6m1u9ynjYVkrMImeoc4rOLPE2KiJ57qeCOv4blVoSAd8llpn0RJtkJs39TekT2YS6TdtIK96ABesoMoz6yXwRQaTKQVSxLDM+AeFxsHPPfjJ9JHxwpDtO0DvU+yl7pb1dDW8s6Sy/GoFX7x/owePStBWICToqBQIDAQAB",
-  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "permissions": [
+    "alarms",
+    "activeTab",
+    "scripting",
+    "storage",
+    "contextMenus"
+  ],
   "icons": {
     "16": "icon-16.png",
     "32": "icon-32.png",

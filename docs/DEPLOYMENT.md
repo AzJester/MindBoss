@@ -84,7 +84,7 @@ Supported commands:
 - `#TAG` applies an existing tag. An existing tag name or trigger word can also be the first SMS keyword.
 - `HELP` returns a short command reference.
 
-SMS is optional and is the only workflow in Mind Boss that introduces a provider phone-number charge and per-message charges.
+SMS remains disabled for this deployment. It would introduce phone-number and message charges if deliberately enabled later. Optional OpenAI API requests are separately billed and do not require SMS.
 
 ## 2. GitHub OAuth
 

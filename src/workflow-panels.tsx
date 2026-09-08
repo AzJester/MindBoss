@@ -336,147 +336,6 @@ export function ReviewQueue({
   );
 }
 
-export function AiPanel({
-  entries,
-  notify,
-}: {
-  entries: Entry[];
-  notify: (message: string) => void;
-}) {
-  const [status, setStatus] = useState<AiStatus | null>(null);
-  const [action, setAction] =
-    useState<Parameters<typeof runAi>[0]["action"]>("weekly_review");
-  const [request, setRequest] = useState("");
-  const [consent, setConsent] = useState(false);
-  const [result, setResult] = useState("");
-  const [busy, setBusy] = useState(false);
-  const selected = entries.slice(0, 40);
-  const inputChars = selected.reduce(
-    (total, entry) => total + entry.title.length + entry.body.length,
-    0,
-  );
-  useEffect(() => {
-    void getAiStatus()
-      .then(setStatus)
-      .catch(() => setStatus(null));
-  }, []);
-  const submit = async () => {
-    if (!consent) return notify("Review and approve the data preview first.");
-    setBusy(true);
-    try {
-      const response = await runAi({
-        action,
-        request,
-        entries: selected.map((entry) => ({
-          title: entry.title,
-          body: entry.body,
-          tags: entry.tags.map((tag) => tag.name),
-        })),
-      });
-      setResult(response.text);
-      setStatus(await getAiStatus());
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "AI request failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="settings-card ai-card">
-      <div className="settings-icon">
-        <Brain />
-      </div>
-      <div className="settings-copy">
-        <h3>
-          Private AI workspace <small>optional</small>
-        </h3>
-        <p>
-          {status?.configured
-            ? "Securely connected. Your OpenAI key stays in a Cloudflare secret and is never sent to this browser."
-            : "OpenAI is not securely connected yet. Add the API key once as a Cloudflare secret to activate this workspace."}
-        </p>
-        <div
-          className={`ai-connection-status ${status?.configured ? "connected" : ""}`}
-        >
-          <span />
-          {status
-            ? status.configured
-              ? `${status.model} · ${status.reasoningEffort} reasoning · ${status.dailyLimit - status.usedToday} requests left today · ${status.monthlyLimit - status.usedThisMonth} left this month`
-              : "Secure connection required"
-            : "Checking secure connection…"}
-        </div>
-        <div className="ai-grid">
-          <label className="field">
-            <span>Action</span>
-            <select
-              value={action}
-              onChange={(event) =>
-                setAction(event.target.value as typeof action)
-              }
-            >
-              <option value="weekly_review">Build weekly review</option>
-              <option value="summarize">Summarize</option>
-              <option value="ask">Answer a question</option>
-              <option value="suggest_tags">Suggest tags</option>
-              <option value="extract_actions">Extract actions</option>
-              <option value="find_duplicates">Find possible duplicates</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>
-              Your instruction <small>optional</small>
-            </span>
-            <input
-              value={request}
-              onChange={(event) => setRequest(event.target.value)}
-              placeholder="Focus on decisions I need to make"
-            />
-          </label>
-        </div>
-        <details className="data-preview">
-          <summary>
-            <ShieldCheck size={15} /> Data preview: {selected.length} entries,{" "}
-            {inputChars.toLocaleString()} characters
-          </summary>
-          <ul>
-            {selected.slice(0, 8).map((entry) => (
-              <li key={entry.id}>
-                {entry.title || entry.body.slice(0, 70) || "Untitled entry"}
-              </li>
-            ))}
-          </ul>
-        </details>
-        <p className="ai-data-note">
-          Only the preview you approve is sent. Requests use{" "}
-          <code>store: false</code>; standard API abuse-monitoring retention may
-          still apply.
-        </p>
-        <label className="consent-row">
-          <input
-            type="checkbox"
-            checked={consent}
-            onChange={(event) => setConsent(event.target.checked)}
-          />{" "}
-          Send this preview to OpenAI for this request
-        </label>
-        <button
-          className="secondary-button"
-          disabled={busy || !status?.configured || !selected.length}
-          onClick={submit}
-        >
-          <Sparkles size={16} /> {busy ? "Working…" : "Run AI tool"}
-        </button>
-        {result && (
-          <div className="ai-result">
-            <strong>Result</strong>
-            <pre>{result}</pre>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export function PreferencesCard({
   preferences,
   onChange,
@@ -484,21 +343,34 @@ export function PreferencesCard({
   preferences: UserPreferences;
   onChange: (preferences: UserPreferences) => void;
 }) {
+  const [draft, setDraft] = useState(preferences),
+    [error, setError] = useState("");
+  useEffect(() => setDraft(preferences), [preferences]);
+  const save = () => {
+    if (
+      Boolean(draft.quietStart) !== Boolean(draft.quietEnd) ||
+      (draft.quietStart && draft.quietStart === draft.quietEnd)
+    ) {
+      setError(
+        "Set both a start and end time, with different times, or clear both.",
+      );
+      return;
+    }
+    setError("");
+    onChange(draft);
+  };
   return (
-    <div className="settings-card">
-      <div className="settings-icon">
-        <Clock3 />
-      </div>
+    <section className="settings-card">
       <div className="settings-copy">
         <h3>Capture and reminder defaults</h3>
         <div className="preference-grid">
           <label className="field">
             <span>Default capture</span>
             <select
-              value={preferences.defaultCaptureKind}
+              value={draft.defaultCaptureKind}
               onChange={(event) =>
-                onChange({
-                  ...preferences,
+                setDraft({
+                  ...draft,
                   defaultCaptureKind: event.target
                     .value as UserPreferences["defaultCaptureKind"],
                 })
@@ -513,12 +385,9 @@ export function PreferencesCard({
             <span>Quiet hours start</span>
             <input
               type="time"
-              value={preferences.quietStart || ""}
+              value={draft.quietStart || ""}
               onChange={(event) =>
-                onChange({
-                  ...preferences,
-                  quietStart: event.target.value || null,
-                })
+                setDraft({ ...draft, quietStart: event.target.value || null })
               }
             />
           </label>
@@ -526,22 +395,19 @@ export function PreferencesCard({
             <span>Quiet hours end</span>
             <input
               type="time"
-              value={preferences.quietEnd || ""}
+              value={draft.quietEnd || ""}
               onChange={(event) =>
-                onChange({
-                  ...preferences,
-                  quietEnd: event.target.value || null,
-                })
+                setDraft({ ...draft, quietEnd: event.target.value || null })
               }
             />
           </label>
           <label className="field">
             <span>Weekly review day</span>
             <select
-              value={preferences.weeklyReviewDay}
+              value={draft.weeklyReviewDay}
               onChange={(event) =>
-                onChange({
-                  ...preferences,
+                setDraft({
+                  ...draft,
                   weeklyReviewDay: Number(event.target.value),
                 })
               }
@@ -562,12 +428,26 @@ export function PreferencesCard({
             </select>
           </label>
         </div>
-        <small>
-          Changes save automatically. Quiet hours delay push delivery, never the
-          reminder itself.
-        </small>
+        <p className="helper-text">
+          Quiet hours defer push notifications. Due reminders remain visible.
+          Weekly review adds an in-app prompt on your chosen day.
+        </p>
+        {error && <p role="alert">{error}</p>}
+        <div className="button-row">
+          <button className="primary-button" onClick={save}>
+            Save defaults
+          </button>
+          <button
+            className="secondary-button"
+            onClick={() =>
+              setDraft({ ...draft, quietStart: null, quietEnd: null })
+            }
+          >
+            Clear quiet hours
+          </button>
+        </div>
       </div>
-    </div>
+    </section>
   );
 }
 

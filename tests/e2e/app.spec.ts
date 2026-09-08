@@ -4,9 +4,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "Everything worth keeping" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
 });
 
 test("captures and retrieves a note", async ({ page }) => {
@@ -76,14 +74,17 @@ test("creates, reorders, and completes a list", async ({ page }) => {
       })
       .first(),
   ).toBeVisible();
-  const dueInput = page.locator(
-    'input.item-due-date[aria-label="Due date for First task"]',
-  );
-  const dueButton = dueInput.locator("xpath=..");
+  const dueButton = page.getByRole("button", {
+    name: "Due date for First task",
+    exact: true,
+  });
   const dueBox = await dueButton.boundingBox();
-  expect(dueBox?.width).toBeGreaterThanOrEqual(100);
-  expect(dueBox?.height).toBeGreaterThanOrEqual(40);
-  await dueInput.fill("2026-09-10", { force: true });
+  expect(dueBox?.height).toBeGreaterThanOrEqual(44);
+  await dueButton.click({ position: { x: 8, y: 20 } });
+  await expect(
+    page.getByRole("dialog", { name: "Due date for First task", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Custom date", { exact: true }).fill("2026-09-10");
   await expect(dueButton).toContainText("Sep 10");
   await page.getByRole("button", { name: "Move item up" }).nth(1).click();
   await page.getByRole("button", { name: "Save to Mind Boss" }).click();
@@ -120,7 +121,6 @@ test("creates a tag during capture and supports search syntax", async ({
   page,
   isMobile,
 }) => {
-  test.skip(isMobile, "Desktop workflow check");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByPlaceholder("Find or create a tag").fill("CLIENT-X");
   await page.getByRole("button", { name: "Create" }).click();
@@ -136,7 +136,6 @@ test("creates a tag during capture and supports search syntax", async ({
 });
 
 test("shows Today and Review workflows", async ({ page, isMobile }) => {
-  test.skip(isMobile, "Desktop workflow check");
   const navigation = page.getByRole("navigation", {
     name: "Mind Boss sections",
   });
@@ -144,12 +143,12 @@ test("shows Today and Review workflows", async ({ page, isMobile }) => {
     await page.getByRole("button", { name: "Open navigation" }).click();
   await navigation.getByRole("button", { name: "Today", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Your day, already gathered" }),
+    page.getByRole("heading", { name: "Today", level: 1 }),
   ).toBeVisible();
-  await expect(page.getByText("Due today")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Due today" })).toBeVisible();
   await page.goto("/?view=review");
   await expect(
-    page.getByRole("heading", { name: "Reconnect with what matters" }),
+    page.getByRole("heading", { name: "Review", level: 1 }),
   ).toBeVisible();
 });
 
@@ -157,7 +156,6 @@ test("switches board, calendar, flex, and view options", async ({
   page,
   isMobile,
 }) => {
-  test.skip(isMobile, "Desktop layout workflow check");
   await page.getByRole("button", { name: "Board", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Turn your tags into working columns" }),
@@ -171,9 +169,11 @@ test("switches board, calendar, flex, and view options", async ({
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Calendar", exact: true }).click();
-  await expect(page.getByRole("grid")).toBeVisible();
+  await expect(
+    page.locator(isMobile ? ".calendar-agenda" : ".calendar-grid"),
+  ).toBeVisible();
 
-  await page.getByRole("button", { name: "Flex", exact: true }).click();
+  await page.getByRole("button", { name: "Grid", exact: true }).click();
   await page.getByLabel("View options").click();
   await page.getByLabel("Compact cards").check();
   await page.getByLabel("Light mode").check();
@@ -189,7 +189,6 @@ test("accepts multiple comma-separated trigger words", async ({
   page,
   isMobile,
 }) => {
-  test.skip(isMobile, "Desktop tag workflow check");
   const navigationButton = page.getByRole("button", {
     name: "Open navigation",
   });
@@ -212,7 +211,6 @@ test("accepts multiple comma-separated trigger words", async ({
 });
 
 test("saves and reuses a capture template", async ({ page, isMobile }) => {
-  test.skip(isMobile, "Desktop workflow check");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByLabel(/Title/).fill("Decision template");
   await page

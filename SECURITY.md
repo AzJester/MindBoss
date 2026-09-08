@@ -27,8 +27,13 @@ Keep these values only in Cloudflare secrets or GitHub Actions secrets:
 - `PUSH_ENCRYPTION_KEY`
 - `VAPID_PRIVATE_KEY`
 - `CLOUDFLARE_API_TOKEN`
+- `OPENAI_API_KEY` (optional server-side AI integration)
 
 Treat a clipper token like a password. Revoke and replace it from Mind Boss settings if it is exposed.
+
+## Local device storage
+
+Offline drafts, pending captures, shared files, cached entries, and the most recent AI result are stored in the browser on that device. They are not end-to-end encrypted. Use a trusted device and an operating-system lock. Signing out revokes the server session; retain or discard pending local captures intentionally before clearing browser storage.
 
 ## Reporting
 
