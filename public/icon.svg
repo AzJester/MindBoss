@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Mind Boss">
+  <defs>
+    <linearGradient id="g" x1="40" y1="35" x2="445" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#102b25"/>
+      <stop offset="1" stop-color="#06100e"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="118" fill="url(#g)"/>
+  <rect x="80" y="80" width="352" height="352" rx="100" fill="none" stroke="#41e2b7" stroke-opacity=".42" stroke-width="10"/>
+  <g fill="none" stroke="#67f0cb" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M165 181l177-10M176 194l84 150M342 184l-73 150" opacity=".72"/>
+  </g>
+  <g fill="#67f0cb" filter="url(#glow)">
+    <circle cx="160" cy="180" r="27"/>
+    <circle cx="347" cy="170" r="27"/>
+    <circle cx="260" cy="347" r="31"/>
+  </g>
+</svg>

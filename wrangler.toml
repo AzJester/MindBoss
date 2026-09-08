@@ -1,0 +1,17 @@
+name = "mindboss"
+compatibility_date = "2026-09-08"
+pages_build_output_dir = "./dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindboss-production"
+database_id = "replace-with-production-d1-id"
+
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "mindboss-production-attachments"
+
+[vars]
+APP_ORIGIN = "https://mindboss.st-dba.com"
+ALLOWED_GITHUB_USER_ID = "127560421"
+EXTENSION_ORIGIN = "chrome-extension://leaohbibobpmkglcmgkopckkkhabbfkd"

@@ -1,0 +1,19 @@
+name = "mindboss-reminders"
+main = "workers/reminders.ts"
+compatibility_date = "2026-09-08"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindboss-production"
+database_id = "replace-with-production-d1-id"
+
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "mindboss-production-attachments"
+
+[vars]
+APP_ORIGIN = "https://mindboss.st-dba.com"
