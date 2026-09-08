@@ -9,11 +9,7 @@ crons = ["* * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "mindboss-production"
-database_id = "replace-with-production-d1-id"
-
-[[r2_buckets]]
-binding = "ATTACHMENTS"
-bucket_name = "mindboss-production-attachments"
+database_id = "748780d4-a462-4837-9a64-f13f2a3fe3e9"
 
 [vars]
 APP_ORIGIN = "https://mindboss.st-dba.com"
