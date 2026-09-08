@@ -59,6 +59,7 @@ export interface Entry {
   reminderAt: string | null;
   reminderState: "pending" | "sending" | "delivered" | "completed" | null;
   recurrenceRule: RecurrenceRule | null;
+  recurrenceAnchorDay?: number | null;
   reviewAt: string | null;
   lastViewedAt: string | null;
   viewCount: number;
@@ -100,6 +101,8 @@ export interface EntryFilters {
   hasAttachments?: boolean;
   due?: "today" | "overdue" | "upcoming";
   review?: "due" | "stale";
+  offset?: number;
+  limit?: number;
 }
 
 export interface SavedSearch {
@@ -129,6 +132,7 @@ export interface UserPreferences {
   quietStart: string | null;
   quietEnd: string | null;
   weeklyReviewDay: number;
+  lastWeeklyReviewAt?: string | null;
   viewMode: LayoutMode;
   groupByTime: boolean;
   compactView: boolean;
@@ -142,6 +146,7 @@ export interface UserPreferences {
 
 export interface Session {
   authenticated: boolean;
+  offline?: boolean;
   csrfToken?: string;
   user?: {
     id: number;

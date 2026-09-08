@@ -286,61 +286,19 @@ export async function listTags(env: Env, userId: number): Promise<Tag[]> {
   );
 }
 
-export async function loadEntry(
-  env: Env,
-  userId: number,
-  entryId: string,
-): Promise<Entry | null> {
-  const row = await env.DB.prepare(
-    "SELECT * FROM entries WHERE id = ? AND user_id = ?",
-  )
-    .bind(entryId, userId)
-    .first<Record<string, unknown>>();
-  if (!row) return null;
-  const [itemsResult, tagsResult, attachmentsResult] = await Promise.all([
-    env.DB.prepare(
-      "SELECT * FROM list_items WHERE entry_id = ? ORDER BY position",
-    )
-      .bind(entryId)
-      .all<Record<string, unknown>>(),
-    env.DB.prepare(
-      `SELECT t.*, COALESCE(GROUP_CONCAT(tt.trigger_text, char(31)), '') AS trigger_list
-       FROM entry_tags et JOIN tags t ON t.id = et.tag_id LEFT JOIN tag_triggers tt ON tt.tag_id = t.id
-       WHERE et.entry_id = ? GROUP BY t.id ORDER BY t.name COLLATE NOCASE`,
-    )
-      .bind(entryId)
-      .all<Record<string, unknown>>(),
-    env.DB.prepare(
-      "SELECT * FROM attachments WHERE entry_id = ? ORDER BY created_at",
-    )
-      .bind(entryId)
-      .all<Record<string, unknown>>(),
-  ]);
-  const listItems: ListItem[] = itemsResult.results.map((item) => ({
-    id: String(item.id),
-    text: String(item.text),
-    position: Number(item.position),
-    completedAt: item.completed_at ? String(item.completed_at) : null,
-    dueAt: item.due_at ? String(item.due_at) : null,
-  }));
-  const tags = tagsResult.results.map((tag) =>
-    mapTag(
-      tag,
-      String(tag.trigger_list || "")
-        .split(String.fromCharCode(31))
-        .filter(Boolean),
-    ),
-  );
-  const attachments: Attachment[] = attachmentsResult.results.map((item) => ({
-    id: String(item.id),
-    entryId,
-    fileName: String(item.file_name),
-    mimeType: String(item.mime_type),
-    size: Number(item.size_bytes),
-    createdAt: String(item.created_at),
-    url: `/api/v1/entries/${entryId}/attachments/${String(item.id)}`,
-    extractedText: item.extracted_text ? String(item.extracted_text) : "",
-  }));
+export const ENTRY_SELECT = `SELECT e.*,
+  (SELECT COALESCE(json_group_array(json_object('id',li.id,'text',li.text,'position',li.position,'completedAt',li.completed_at,'dueAt',li.due_at)), '[]')
+   FROM (SELECT * FROM list_items WHERE entry_id=e.id ORDER BY position) li) AS items_json,
+  (SELECT COALESCE(json_group_array(json_object('id',t.id,'name',t.name,'color',t.color,'parentId',t.parent_id,'createdAt',t.created_at,
+   'triggers',json((SELECT COALESCE(json_group_array(trigger_text),'[]') FROM tag_triggers WHERE tag_id=t.id)))),'[]')
+   FROM entry_tags et JOIN tags t ON t.id=et.tag_id WHERE et.entry_id=e.id) AS tags_json,
+  (SELECT COALESCE(json_group_array(json_object('id',a.id,'entryId',a.entry_id,'fileName',a.file_name,'mimeType',a.mime_type,
+   'size',a.size_bytes,'createdAt',a.created_at,'sha256',a.sha256,'extractedText',a.extracted_text,
+   'url','/api/v1/entries/'||e.id||'/attachments/'||a.id)),'[]')
+   FROM attachments a WHERE a.entry_id=e.id) AS attachments_json
+  FROM entries e`;
+
+export function mapEntry(row: Record<string, unknown>): Entry {
   return {
     id: String(row.id),
     kind: row.kind as Entry["kind"],
@@ -362,10 +320,26 @@ export async function loadEntry(
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     version: Number(row.version),
-    listItems,
-    tags,
-    attachments,
+    listItems: JSON.parse(String(row.items_json || "[]")),
+    tags: JSON.parse(String(row.tags_json || "[]")),
+    attachments: JSON.parse(String(row.attachments_json || "[]")),
+    recurrenceAnchorDay: row.recurrence_anchor_day
+      ? Number(row.recurrence_anchor_day)
+      : null,
   };
+}
+
+export async function loadEntry(
+  env: Env,
+  userId: number,
+  entryId: string,
+): Promise<Entry | null> {
+  const row = await env.DB.prepare(
+    ENTRY_SELECT + " WHERE e.id = ? AND e.user_id = ?",
+  )
+    .bind(entryId, userId)
+    .first<Record<string, unknown>>();
+  return row ? mapEntry(row) : null;
 }
 
 export async function syncEntrySearch(

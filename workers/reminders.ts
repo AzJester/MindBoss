@@ -1,4 +1,5 @@
 import webpush from "web-push";
+import { dateKey, nextRecurrence } from "../shared/time";
 
 interface Env {
   DB: D1Database;
@@ -16,29 +17,14 @@ interface DueReminder {
   title: string;
   body: string;
   reminder_at: string;
+  version: number;
+  recurrence_anchor_day: number | null;
   recurrence_rule: "daily" | "weekdays" | "weekly" | "monthly" | null;
 }
 
 interface Subscription {
   id: string;
   subscription_ciphertext: string;
-}
-
-function nextOccurrence(
-  value: string,
-  rule: DueReminder["recurrence_rule"],
-): string | null {
-  if (!rule) return null;
-  const next = new Date(value);
-  if (rule === "daily" || rule === "weekdays")
-    next.setUTCDate(next.getUTCDate() + 1);
-  if (rule === "weekdays") {
-    while ([0, 6].includes(next.getUTCDay()))
-      next.setUTCDate(next.getUTCDate() + 1);
-  }
-  if (rule === "weekly") next.setUTCDate(next.getUTCDate() + 7);
-  if (rule === "monthly") next.setUTCMonth(next.getUTCMonth() + 1);
-  return next.toISOString();
 }
 
 async function isQuietTime(env: Env, userId: number): Promise<boolean> {
@@ -94,7 +80,7 @@ async function decryptSubscription(
   return JSON.parse(new TextDecoder().decode(plaintext));
 }
 
-async function sendDueReminders(
+export async function sendDueReminders(
   env: Env,
 ): Promise<{ due: number; sent: number; expired: number }> {
   webpush.setVapidDetails(
@@ -110,7 +96,7 @@ async function sendDueReminders(
     .bind(staleClaim)
     .run();
   const due = await env.DB.prepare(
-    `SELECT id, user_id, title, body, reminder_at, recurrence_rule FROM entries
+    `SELECT id, user_id, title, body, reminder_at, recurrence_rule, recurrence_anchor_day, version FROM entries
      WHERE kind = 'reminder' AND status = 'active' AND reminder_state = 'pending' AND reminder_at <= ?
      ORDER BY reminder_at LIMIT 100`,
   )
@@ -121,9 +107,9 @@ async function sendDueReminders(
   for (const reminder of due.results) {
     if (await isQuietTime(env, reminder.user_id)) continue;
     const claim = await env.DB.prepare(
-      "UPDATE entries SET reminder_state = 'sending', updated_at = ? WHERE id = ? AND reminder_state = 'pending'",
+      "UPDATE entries SET reminder_state = 'sending', updated_at = ? WHERE id = ? AND reminder_state = 'pending' AND version = ? AND reminder_at = ?",
     )
-      .bind(now, reminder.id)
+      .bind(now, reminder.id, reminder.version, reminder.reminder_at)
       .run();
     if (!claim.meta.changes) continue;
     const subscriptions = await env.DB.prepare(
@@ -132,7 +118,17 @@ async function sendDueReminders(
       .bind(reminder.user_id)
       .all<Subscription>();
     let delivered = false;
+    let failed = false;
     for (const subscription of subscriptions.results) {
+      const accepted = await env.DB.prepare(
+        "SELECT 1 FROM push_deliveries WHERE entry_id = ? AND subscription_id = ? AND due_at = ?",
+      )
+        .bind(reminder.id, subscription.id, reminder.reminder_at)
+        .first();
+      if (accepted) {
+        delivered = true;
+        continue;
+      }
       try {
         const subscriptionValue = await decryptSubscription(
           env.PUSH_ENCRYPTION_KEY,
@@ -153,6 +149,11 @@ async function sendDueReminders(
         )
           .bind(now, subscription.id)
           .run();
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO push_deliveries(entry_id, subscription_id, due_at, accepted_at) VALUES (?, ?, ?, ?)",
+        )
+          .bind(reminder.id, subscription.id, reminder.reminder_at, now)
+          .run();
         delivered = true;
         sent += 1;
       } catch (error) {
@@ -165,19 +166,42 @@ async function sendDueReminders(
             .bind(subscription.id)
             .run();
           expired += 1;
+        } else {
+          failed = true;
         }
       }
     }
-    if (delivered) {
-      const nextAt = nextOccurrence(
+    if (delivered && !failed) {
+      const preferences = await env.DB.prepare(
+        "SELECT display_timezone FROM user_preferences WHERE user_id = ?",
+      )
+        .bind(reminder.user_id)
+        .first<{ display_timezone: string }>();
+      const nextAt = nextRecurrence(
         reminder.reminder_at,
         reminder.recurrence_rule,
+        preferences?.display_timezone || "America/Phoenix",
+        new Date(now),
+        reminder.recurrence_anchor_day || undefined,
       );
       await env.DB.batch([
         env.DB.prepare(
-          `UPDATE entries SET reminder_state = ?, reminder_at = COALESCE(?, reminder_at), updated_at = ?, version = version + 1
-           WHERE id = ? AND reminder_state = 'sending'`,
-        ).bind(nextAt ? "pending" : "delivered", nextAt, now, reminder.id),
+          `UPDATE entries SET reminder_state = ?, reminder_at = COALESCE(?, reminder_at), recurrence_anchor_day = COALESCE(recurrence_anchor_day, ?), updated_at = ?, version = version + 1
+           WHERE id = ? AND reminder_state = 'sending' AND version = ? AND reminder_at = ?`,
+        ).bind(
+          nextAt ? "pending" : "delivered",
+          nextAt,
+          Number(
+            dateKey(
+              reminder.reminder_at,
+              preferences?.display_timezone || "America/Phoenix",
+            ).slice(-2),
+          ),
+          now,
+          reminder.id,
+          reminder.version,
+          reminder.reminder_at,
+        ),
         env.DB.prepare(
           "INSERT INTO entry_events(id, entry_id, user_id, action, metadata_json, created_at) VALUES (?, ?, ?, 'reminder_delivered', ?, ?)",
         ).bind(
@@ -190,16 +214,16 @@ async function sendDueReminders(
       ]);
     } else {
       await env.DB.prepare(
-        "UPDATE entries SET reminder_state = 'pending', updated_at = ? WHERE id = ? AND reminder_state = 'sending'",
+        "UPDATE entries SET reminder_state = 'pending', updated_at = ? WHERE id = ? AND reminder_state = 'sending' AND version = ? AND reminder_at = ?",
       )
-        .bind(now, reminder.id)
+        .bind(now, reminder.id, reminder.version, reminder.reminder_at)
         .run();
     }
   }
   return { due: due.results.length, sent, expired };
 }
 
-async function purgeExpired(env: Env): Promise<{ entries: number }> {
+export async function purgeExpired(env: Env): Promise<{ entries: number }> {
   const now = new Date();
   const trashCutoff = new Date(
     now.getTime() - 30 * 24 * 60 * 60_000,
@@ -211,18 +235,19 @@ async function purgeExpired(env: Env): Promise<{ entries: number }> {
     .bind(trashCutoff)
     .all<{ id: string }>();
   for (const entry of entries.results) {
-    const objects = await env.DB.prepare(
-      "SELECT r2_key FROM attachments WHERE entry_id = ?",
-    )
-      .bind(entry.id)
-      .all<{ r2_key: string }>();
-    if (objects.results.length)
-      await env.ATTACHMENTS.delete(objects.results.map((item) => item.r2_key));
     await env.DB.batch([
-      env.DB.prepare("DELETE FROM entries_fts WHERE entry_id = ?").bind(
-        entry.id,
-      ),
-      env.DB.prepare("DELETE FROM entries WHERE id = ?").bind(entry.id),
+      env.DB.prepare(
+        "INSERT OR IGNORE INTO attachment_cleanup(r2_key, created_at) SELECT a.r2_key, ? FROM attachments a JOIN entries e ON e.id=a.entry_id WHERE e.id=? AND e.status='trashed' AND e.deleted_at < ?",
+      ).bind(sessionCutoff, entry.id, trashCutoff),
+      env.DB.prepare(
+        "INSERT OR IGNORE INTO deleted_entry_ids(id, user_id, deleted_at) SELECT id, user_id, ? FROM entries WHERE id=? AND status='trashed' AND deleted_at < ?",
+      ).bind(sessionCutoff, entry.id, trashCutoff),
+      env.DB.prepare(
+        "DELETE FROM entries_fts WHERE entry_id IN (SELECT id FROM entries WHERE id=? AND status='trashed' AND deleted_at < ?)",
+      ).bind(entry.id, trashCutoff),
+      env.DB.prepare(
+        "DELETE FROM entries WHERE id=? AND status='trashed' AND deleted_at < ?",
+      ).bind(entry.id, trashCutoff),
     ]);
   }
   await env.DB.batch([
@@ -236,6 +261,19 @@ async function purgeExpired(env: Env): Promise<{ entries: number }> {
       new Date(now.getTime() - 7 * 24 * 60 * 60_000).toISOString(),
     ),
   ]);
+  const cleanup = await env.DB.prepare(
+    "SELECT r2_key FROM attachment_cleanup LIMIT 100",
+  ).all<{ r2_key: string }>();
+  for (const item of cleanup.results) {
+    try {
+      await env.ATTACHMENTS.delete(item.r2_key);
+      await env.DB.prepare("DELETE FROM attachment_cleanup WHERE r2_key = ?")
+        .bind(item.r2_key)
+        .run();
+    } catch {
+      /* Keep the durable cleanup job for the next run. */
+    }
+  }
   return { entries: entries.results.length };
 }
 

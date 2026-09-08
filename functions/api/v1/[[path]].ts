@@ -15,6 +15,8 @@ import {
   listTags,
   loadAuth,
   loadEntry,
+  ENTRY_SELECT,
+  mapEntry,
   nowIso,
   randomToken,
   recordEvent,
@@ -28,17 +30,25 @@ import {
   type Env,
 } from "../_lib";
 import {
+  captureTemplate,
+  savedSearch,
+  preferences,
   handleAi,
   handlePreferences,
   handleSavedSearches,
   handleTemplates,
 } from "../features";
+import { dateKey, localInstant, shiftDate } from "../../../shared/time";
 
 type ImportRecord = EntryInput & {
   createdAt?: string;
   status?: Entry["status"];
   pinned?: boolean;
   tags?: string[];
+  roundTrip?: boolean;
+  updatedAt?: string;
+  reminderState?: Entry["reminderState"];
+  pinnedAt?: string | null;
 };
 
 function routeParts(request: Request): string[] {
@@ -463,6 +473,18 @@ async function createEntry(
   }
   const existing = await loadEntry(env, userId, input.id);
   if (existing) return existing;
+  if (
+    await env.DB.prepare(
+      "SELECT id FROM deleted_entry_ids WHERE id=? AND user_id=?",
+    )
+      .bind(input.id, userId)
+      .first()
+  )
+    throw new HttpError(
+      410,
+      "entry_deleted",
+      "This entry was permanently deleted. Make a new capture to save it again.",
+    );
   const now = nowIso();
   const createdAt =
     options.createdAt && !Number.isNaN(Date.parse(options.createdAt))
@@ -542,15 +564,23 @@ async function listEntries(
   env: Env,
   userId: number,
   request: Request,
+  all = false,
 ): Promise<Entry[]> {
   const params = new URL(request.url).searchParams;
   const where = ["e.user_id = ?"];
   const values: unknown[] = [userId];
+  const pref = await env.DB.prepare(
+    "SELECT display_timezone FROM user_preferences WHERE user_id=?",
+  )
+    .bind(userId)
+    .first<{ display_timezone: string }>();
+  const authTimezone = pref?.display_timezone || "America/Phoenix";
   const q = normalizeWhitespace(params.get("q"), 200);
-  let from = "entries e";
+  let from = ENTRY_SELECT;
   if (q) {
-    from += " JOIN entries_fts ON entries_fts.entry_id = e.id";
-    where.push("entries_fts MATCH ?");
+    where.push(
+      "e.id IN (SELECT entry_id FROM entries_fts WHERE entries_fts MATCH ?)",
+    );
     values.push(ftsQuery(q));
   }
   const status = params.get("status") || "active";
@@ -585,15 +615,27 @@ async function listEntries(
   const toDate = params.get("to");
   if (fromDate && !Number.isNaN(Date.parse(fromDate))) {
     where.push("e.created_at >= ?");
-    values.push(new Date(fromDate).toISOString());
+    values.push(
+      /^\d{4}-\d{2}-\d{2}$/.test(fromDate)
+        ? localInstant(fromDate, 0, 0, authTimezone).toISOString()
+        : new Date(fromDate).toISOString(),
+    );
   }
   if (toDate && !Number.isNaN(Date.parse(toDate))) {
-    where.push("e.created_at <= ?");
-    values.push(new Date(toDate).toISOString());
+    where.push("e.created_at < ?");
+    values.push(
+      /^\d{4}-\d{2}-\d{2}$/.test(toDate)
+        ? localInstant(shiftDate(toDate, 1), 0, 0, authTimezone).toISOString()
+        : new Date(toDate).toISOString(),
+    );
   }
   const due = params.get("due");
   if (due) {
-    const bounds = phoenixDayBounds();
+    const key = dateKey(new Date(), authTimezone);
+    const bounds = {
+      start: localInstant(key, 0, 0, authTimezone).toISOString(),
+      end: localInstant(shiftDate(key, 1), 0, 0, authTimezone).toISOString(),
+    };
     if (due === "today") {
       where.push(
         `((e.reminder_at >= ? AND e.reminder_at < ? AND e.reminder_state != 'completed') OR
@@ -622,18 +664,17 @@ async function listEntries(
     where.push(
       "COALESCE(e.last_viewed_at, e.updated_at) <= ? AND e.status = 'active'",
     );
-    values.push(new Date(Date.now() - 90 * 24 * 60 * 60_000).toISOString());
+    values.push(new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString());
   }
   const direction = params.get("sort") === "oldest" ? "ASC" : "DESC";
+  const limit = Math.max(1, Math.min(250, Number(params.get("limit")) || 100));
+  const offset = Math.max(0, Math.floor(Number(params.get("offset")) || 0));
   const rows = await env.DB.prepare(
-    `SELECT DISTINCT e.id FROM ${from} WHERE ${where.join(" AND ")}
-     ORDER BY (e.pinned_at IS NOT NULL) DESC, e.pinned_at DESC, e.created_at ${direction} LIMIT 250`,
+    `${from} WHERE ${where.join(" AND ")} ORDER BY (e.pinned_at IS NOT NULL) DESC, e.pinned_at DESC, e.created_at ${direction}, e.id ${direction}${all ? "" : " LIMIT ? OFFSET ?"}`,
   )
-    .bind(...values)
-    .all<{ id: string }>();
-  return (
-    await Promise.all(rows.results.map((row) => loadEntry(env, userId, row.id)))
-  ).filter((entry): entry is Entry => Boolean(entry));
+    .bind(...values, ...(all ? [] : [limit, offset]))
+    .all<Record<string, unknown>>();
+  return rows.results.map(mapEntry);
 }
 
 async function updateEntry(
@@ -702,14 +743,17 @@ async function updateEntry(
     ["pending", "delivered", "completed"].includes(body.reminderState)
       ? body.reminderState
       : input.reminderAt
-        ? existing.reminderState || "pending"
+        ? input.reminderAt !== existing.reminderAt
+          ? "pending"
+          : existing.reminderState || "pending"
         : null;
   const updated = nowIso();
-  const result = await env.DB.prepare(
-    `UPDATE entries SET kind = ?, title = ?, body = ?, source_url = ?, source_title = ?, status = ?, pinned_at = ?, reminder_at = ?, reminder_state = ?,
-     recurrence_rule = ?, review_at = ?, deleted_at = ?, updated_at = ?, version = version + 1 WHERE id = ? AND user_id = ? AND version = ?`,
-  )
-    .bind(
+  const mutationId = crypto.randomUUID();
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(
+      `UPDATE entries SET kind = ?, title = ?, body = ?, source_url = ?, source_title = ?, status = ?, pinned_at = ?, reminder_at = ?, reminder_state = ?,
+     recurrence_rule = ?, recurrence_anchor_day = ?, review_at = ?, deleted_at = ?, updated_at = ?, last_mutation_id = ?, version = version + 1 WHERE id = ? AND user_id = ? AND version = ?`,
+    ).bind(
       input.kind,
       input.title || "",
       input.body || "",
@@ -720,6 +764,23 @@ async function updateEntry(
       input.reminderAt || null,
       reminderState,
       input.recurrenceRule || null,
+      input.reminderAt
+        ? input.reminderAt === existing.reminderAt &&
+          existing.recurrenceAnchorDay
+          ? existing.recurrenceAnchorDay
+          : Number(
+              dateKey(
+                input.reminderAt,
+                (
+                  await env.DB.prepare(
+                    "SELECT display_timezone FROM user_preferences WHERE user_id = ?",
+                  )
+                    .bind(auth.user.id)
+                    .first<{ display_timezone: string }>()
+                )?.display_timezone || "America/Phoenix",
+              ).slice(-2),
+            )
+        : null,
       input.reviewAt || null,
       status === "trashed"
         ? existing.status === "trashed"
@@ -727,26 +788,23 @@ async function updateEntry(
           : updated
         : null,
       updated,
+      mutationId,
       entryId,
       auth.user.id,
       existing.version,
-    )
-    .run();
-  if (!result.meta.changes)
-    throw new HttpError(
-      409,
-      "entry_conflict",
-      "This entry changed on another device.",
-    );
+    ),
+  ];
 
   if (Array.isArray(body.listItems)) {
     const itemStatements: D1PreparedStatement[] = [
-      env.DB.prepare("DELETE FROM list_items WHERE entry_id = ?").bind(entryId),
+      env.DB.prepare(
+        "DELETE FROM list_items WHERE entry_id = ? AND EXISTS (SELECT 1 FROM entries WHERE id = ? AND last_mutation_id = ?)",
+      ).bind(entryId, entryId, mutationId),
     ];
     for (const item of input.listItems || [])
       itemStatements.push(
         env.DB.prepare(
-          "INSERT INTO list_items(id, entry_id, text, position, completed_at, due_at) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO list_items(id, entry_id, text, position, completed_at, due_at) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM entries WHERE id = ? AND last_mutation_id = ?)",
         ).bind(
           item.id,
           entryId,
@@ -754,31 +812,42 @@ async function updateEntry(
           item.position,
           item.completedAt,
           item.dueAt,
+          entryId,
+          mutationId,
         ),
       );
-    await env.DB.batch(itemStatements);
+    statements.push(...itemStatements);
   }
   if (Array.isArray(body.tagIds)) {
     const tagStatements: D1PreparedStatement[] = [
       env.DB.prepare(
-        "DELETE FROM entry_tags WHERE entry_id = ? AND source = 'manual'",
-      ).bind(entryId),
+        "DELETE FROM entry_tags WHERE entry_id = ? AND source = 'manual' AND EXISTS (SELECT 1 FROM entries WHERE id = ? AND last_mutation_id = ?)",
+      ).bind(entryId, entryId, mutationId),
     ];
     for (const tagId of input.tagIds || [])
       tagStatements.push(
         env.DB.prepare(
-          `INSERT INTO entry_tags(entry_id, tag_id, source, created_at) SELECT ?, id, 'manual', ? FROM tags WHERE id = ? AND user_id = ?
-       ON CONFLICT(entry_id, tag_id) DO UPDATE SET source = CASE WHEN entry_tags.source = 'import' THEN 'manual' ELSE entry_tags.source END`,
-        ).bind(entryId, updated, tagId, auth.user.id),
+          `INSERT INTO entry_tags(entry_id, tag_id, source, created_at) SELECT ?, id, 'manual', ? FROM tags WHERE id = ? AND user_id = ? AND EXISTS (SELECT 1 FROM entries WHERE id = ? AND last_mutation_id = ?)
+       ON CONFLICT(entry_id, tag_id) DO UPDATE SET source = 'manual'`,
+        ).bind(entryId, updated, tagId, auth.user.id, entryId, mutationId),
       );
-    await env.DB.batch(tagStatements);
+    statements.push(...tagStatements);
   }
+  const results = await env.DB.batch(statements);
+  if (!results[0].meta.changes)
+    throw new HttpError(
+      409,
+      "entry_conflict",
+      "This entry changed on another device.",
+      { server: await loadEntry(env, auth.user.id, entryId) },
+    );
+  const current = (await loadEntry(env, auth.user.id, entryId))!;
   const searchable = [
-    input.title,
-    input.body,
-    input.sourceTitle,
-    input.sourceUrl,
-    ...(input.listItems || []).map((item) => item.text),
+    current.title,
+    current.body,
+    current.sourceTitle,
+    current.sourceUrl,
+    ...(current.listItems || []).map((item) => item.text),
   ]
     .filter(Boolean)
     .join("\n");
@@ -823,6 +892,12 @@ async function deleteEntryPermanently(
     .all<{ r2_key: string }>();
   const results = await env.DB.batch([
     env.DB.prepare(
+      "INSERT OR IGNORE INTO attachment_cleanup(r2_key,created_at) SELECT a.r2_key,? FROM attachments a JOIN entries e ON e.id=a.entry_id WHERE e.id=? AND e.user_id=? AND e.status=\'trashed\' AND e.version=?",
+    ).bind(nowIso(), entryId, auth.user.id, version),
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO deleted_entry_ids(id,user_id,deleted_at) SELECT id,user_id,? FROM entries WHERE id=? AND user_id=? AND status=\'trashed\' AND version=?",
+    ).bind(nowIso(), entryId, auth.user.id, version),
+    env.DB.prepare(
       `DELETE FROM entries_fts WHERE entry_id IN (
         SELECT id FROM entries WHERE id = ? AND user_id = ? AND status = 'trashed' AND version = ?
       )`,
@@ -831,16 +906,27 @@ async function deleteEntryPermanently(
       "DELETE FROM entries WHERE id = ? AND user_id = ? AND status = 'trashed' AND version = ?",
     ).bind(entryId, auth.user.id, version),
   ]);
-  if (!results[1]?.meta.changes)
+  if (!results[3]?.meta.changes)
     throw new HttpError(
       409,
       "entry_conflict",
       "This entry changed on another device.",
     );
-  if (attachments.results.length)
-    await env.ATTACHMENTS.delete(
-      attachments.results.map((attachment) => attachment.r2_key),
-    );
+  await env.DB.prepare(
+    "DELETE FROM idempotency_keys WHERE user_id=? AND (key=? OR json_extract(response_json,'$.entry.id')=? OR json_extract(response_json,'$.entryId')=?)",
+  )
+    .bind(auth.user.id, entryId, entryId, entryId)
+    .run();
+  for (const attachment of attachments.results) {
+    try {
+      await env.ATTACHMENTS.delete(attachment.r2_key);
+      await env.DB.prepare("DELETE FROM attachment_cleanup WHERE r2_key=?")
+        .bind(attachment.r2_key)
+        .run();
+    } catch {
+      /* Durable cleanup retries in the reminder worker. */
+    }
+  }
 }
 
 function validColor(value: unknown): string {
@@ -1081,12 +1167,6 @@ async function handleAttachments(
   }
   requireMutationSecurity(env, request, auth);
   if (request.method === "POST" && !attachmentId) {
-    if (entry.attachments.length >= MAX_ATTACHMENTS)
-      throw new HttpError(
-        400,
-        "attachment_limit",
-        `Each entry can have up to ${MAX_ATTACHMENTS} attachments.`,
-      );
     const form = await request.formData();
     const file = form.get("file");
     if (!(file instanceof File))
@@ -1116,6 +1196,12 @@ async function handleAttachments(
       .bind(entryId, contentHash)
       .first();
     if (duplicate) return json({ entry });
+    if (entry.attachments.length >= MAX_ATTACHMENTS)
+      throw new HttpError(
+        400,
+        "attachment_limit",
+        `Each entry can have up to ${MAX_ATTACHMENTS} attachments.`,
+      );
     const id = crypto.randomUUID();
     const key = `${auth.user.id}/${entryId}/${id}`;
     await env.ATTACHMENTS.put(key, data, {
@@ -1281,7 +1367,7 @@ async function handleClip(env: Env, request: Request): Promise<Response> {
   await env.DB.prepare("UPDATE clip_tokens SET last_used_at = ? WHERE id = ?")
     .bind(nowIso(), token.id)
     .run();
-  return json({ entry }, { status: 201 });
+  return json({ ok: true, id: entry.id }, { status: 201 });
 }
 
 async function handleImport(
@@ -1314,14 +1400,40 @@ async function handleImport(
           normalizeWhitespace(record.title, 500).toLocaleLowerCase("en-US"),
           normalizeWhitespace(record.body).toLocaleLowerCase("en-US"),
           record.createdAt ? new Date(record.createdAt).toISOString() : "",
+          record.kind,
+          record.sourceUrl || "",
+          record.reminderAt || "",
+          (record.listItems || []).map((item) => [
+            item.text,
+            item.completedAt,
+            item.dueAt,
+          ]),
         ]),
       );
       const duplicate = await env.DB.prepare(
-        "SELECT id FROM entries WHERE user_id = ? AND import_hash = ?",
+        "SELECT id FROM entries WHERE user_id = ? AND import_hash IN (?,?)",
       )
-        .bind(auth.user.id, importHash)
+        .bind(
+          auth.user.id,
+          importHash,
+          await sha256(
+            JSON.stringify([
+              normalizeWhitespace(record.title, 500).toLocaleLowerCase("en-US"),
+              normalizeWhitespace(record.body).toLocaleLowerCase("en-US"),
+              record.createdAt ? new Date(record.createdAt).toISOString() : "",
+            ]),
+          ),
+        )
         .first();
-      if (duplicate) {
+      if (
+        duplicate ||
+        (record.roundTrip &&
+          (await env.DB.prepare(
+            "SELECT 1 FROM entries WHERE id=? AND user_id=?",
+          )
+            .bind(record.id, auth.user.id)
+            .first()))
+      ) {
         skipped += 1;
         continue;
       }
@@ -1350,18 +1462,47 @@ async function handleImport(
       await createEntry(
         env,
         auth.user.id,
-        { ...record, id: entryId, source: "mindchuk_import", tagIds },
+        {
+          ...record,
+          id: entryId,
+          source: record.roundTrip ? record.source : "mindchuk_import",
+          tagIds,
+        },
         {
           createdAt: record.createdAt,
           status: record.status,
           importHash,
         },
       );
+      if (record.roundTrip)
+        await env.DB.prepare(
+          "UPDATE entries SET updated_at=?, reminder_state=? WHERE id=? AND user_id=?",
+        )
+          .bind(
+            record.updatedAt && !Number.isNaN(Date.parse(record.updatedAt))
+              ? record.updatedAt
+              : nowIso(),
+            record.reminderAt &&
+              ["pending", "delivered", "completed"].includes(
+                String(record.reminderState),
+              )
+              ? record.reminderState
+              : record.reminderAt
+                ? "pending"
+                : null,
+            entryId,
+            auth.user.id,
+          )
+          .run();
       if (record.pinned)
         await env.DB.prepare(
           "UPDATE entries SET pinned_at = ? WHERE id = ? AND user_id = ?",
         )
-          .bind(record.createdAt || nowIso(), entryId, auth.user.id)
+          .bind(
+            record.pinnedAt || record.createdAt || nowIso(),
+            entryId,
+            auth.user.id,
+          )
           .run();
       created += 1;
     } catch (error) {
@@ -1379,6 +1520,247 @@ function csvCell(value: unknown): string {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+async function handleRestore(
+  env: Env,
+  auth: AuthContext,
+  request: Request,
+): Promise<Response> {
+  requireMutationSecurity(env, request, auth);
+  const body = await requestJson(request);
+  const source = body.entries;
+  if (!Array.isArray(source) || source.length > 25)
+    throw new HttpError(
+      400,
+      "backup_batch_invalid",
+      "Restore at most 25 entries per batch.",
+    );
+  const created: string[] = [],
+    skipped: string[] = [],
+    uploadIds: string[] = [],
+    errors: Array<{ id: string; message: string }> = [];
+  const existingTags = await listTags(env, auth.user.id);
+  const names = new Map(
+    existingTags.map((tag) => [normalizeTagName(tag.name), tag.id]),
+  );
+  const tagMap = new Map(existingTags.map((tag) => [tag.id, tag.id]));
+  if (Array.isArray(body.tags)) {
+    const tags = body.tags.slice(0, 1000) as Array<Record<string, unknown>>;
+    const createdTags: Array<{ id: string; source: Record<string, unknown> }> =
+      [];
+    for (const tag of [
+      ...tags.filter((t) => !t.parentId),
+      ...tags.filter((t) => t.parentId),
+    ]) {
+      const name = normalizeTagName(tag.name);
+      if (!name) continue;
+      let id = names.get(name);
+      if (!id) {
+        id = crypto.randomUUID();
+        const now = nowIso();
+        await env.DB.prepare(
+          "INSERT INTO tags(id,user_id,name,normalized_name,color,parent_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        )
+          .bind(
+            id,
+            auth.user.id,
+            name,
+            name,
+            validColor(tag.color),
+            tagMap.get(String(tag.parentId)) || null,
+            now,
+            now,
+          )
+          .run();
+        await replaceTagTriggers(env, id, tag.triggers);
+        createdTags.push({ id, source: tag });
+        names.set(name, id);
+      }
+      tagMap.set(String(tag.id), id);
+    }
+    // Resolve every depth after all IDs are known, regardless of backup ordering.
+    for (const { id, source: tag } of createdTags) {
+      const ancestors = new Set([String(tag.id)]);
+      let parent = tag.parentId;
+      let cyclic = false;
+      while (parent) {
+        if (ancestors.has(String(parent))) {
+          cyclic = true;
+          break;
+        }
+        ancestors.add(String(parent));
+        parent = tags.find(
+          (candidate) => String(candidate.id) === String(parent),
+        )?.parentId;
+      }
+      const parentId = !cyclic && tagMap.get(String(tag.parentId));
+      if (parentId && parentId !== id)
+        await env.DB.prepare(
+          "UPDATE tags SET parent_id=? WHERE id=? AND user_id=?",
+        )
+          .bind(parentId, id, auth.user.id)
+          .run();
+    }
+  }
+  for (const raw of source) {
+    const entry = raw as Entry;
+    try {
+      if (!entry || typeof entry.id !== "string")
+        throw new Error("Missing entry ID.");
+      const current = await env.DB.prepare(
+        "SELECT import_hash FROM entries WHERE id=? AND user_id=?",
+      )
+        .bind(entry.id, auth.user.id)
+        .first<{ import_hash: string }>();
+      if (current) {
+        skipped.push(entry.id);
+        if (current.import_hash === "backup:" + entry.id)
+          uploadIds.push(entry.id);
+        continue;
+      }
+      const listItems = (entry.listItems || []).map((item, position) => ({
+        ...item,
+        id: crypto.randomUUID(),
+        position,
+      }));
+      const saved = await createEntry(
+        env,
+        auth.user.id,
+        {
+          ...entry,
+          listItems,
+          tagIds: (entry.tags || [])
+            .map((tag) => names.get(normalizeTagName(tag.name)))
+            .filter(Boolean),
+        },
+        {
+          createdAt: entry.createdAt,
+          status: entry.status,
+          importHash: "backup:" + entry.id,
+        },
+      );
+      const date = (value: unknown) =>
+        typeof value === "string" && !Number.isNaN(Date.parse(value))
+          ? new Date(value).toISOString()
+          : null;
+      await env.DB.prepare(
+        "UPDATE entries SET updated_at=?, pinned_at=?, reminder_state=?, recurrence_anchor_day=?, last_viewed_at=?, view_count=? WHERE id=? AND user_id=?",
+      )
+        .bind(
+          date(entry.updatedAt) || saved.updatedAt,
+          date(entry.pinnedAt),
+          saved.reminderAt &&
+            ["pending", "delivered", "completed"].includes(
+              String(entry.reminderState),
+            )
+            ? entry.reminderState
+            : saved.reminderState,
+          entry.recurrenceAnchorDay || null,
+          date(entry.lastViewedAt),
+          Math.max(0, Number(entry.viewCount) || 0),
+          entry.id,
+          auth.user.id,
+        )
+        .run();
+      created.push(entry.id);
+      uploadIds.push(entry.id);
+    } catch (error) {
+      errors.push({
+        id: entry?.id || "",
+        message: error instanceof Error ? error.message : "Restore failed.",
+      });
+    }
+  }
+  if (body.restoreSettings === true) {
+    const send = (path: string, value: unknown) =>
+      new Request(env.APP_ORIGIN + "/api/v1/" + path, {
+        method: "POST",
+        headers: request.headers,
+        body: JSON.stringify(value),
+      });
+    if (body.preferences && typeof body.preferences === "object")
+      await handlePreferences(
+        env,
+        auth,
+        new Request(env.APP_ORIGIN + "/api/v1/preferences", {
+          method: "PATCH",
+          headers: request.headers,
+          body: JSON.stringify({
+            ...(body.preferences as Record<string, unknown>),
+            boardTagIds: Array.isArray(
+              (body.preferences as Record<string, unknown>).boardTagIds,
+            )
+              ? (
+                  (body.preferences as Record<string, unknown>)
+                    .boardTagIds as unknown[]
+                )
+                  .map(
+                    (id) =>
+                      tagMap.get(String(id)) ||
+                      (["__untagged__", "__archive__"].includes(String(id))
+                        ? String(id)
+                        : null),
+                  )
+                  .filter(Boolean)
+              : [],
+          }),
+        }),
+      );
+    if (Array.isArray(body.templates))
+      for (const template of body.templates.slice(0, 100) as Array<
+        Record<string, unknown>
+      >) {
+        if (
+          await env.DB.prepare(
+            "SELECT 1 FROM capture_templates WHERE id=? AND user_id=?",
+          )
+            .bind(String(template.id), auth.user.id)
+            .first()
+        )
+          continue;
+        await handleTemplates(
+          env,
+          auth,
+          send("templates", {
+            ...template,
+            tagIds: Array.isArray(template.tagIds)
+              ? template.tagIds
+                  .map((id) => tagMap.get(String(id)))
+                  .filter(Boolean)
+              : [],
+          }),
+          ["templates"],
+        );
+      }
+    if (Array.isArray(body.savedSearches))
+      for (const search of body.savedSearches.slice(0, 100) as Array<
+        Record<string, unknown>
+      >) {
+        if (
+          await env.DB.prepare(
+            "SELECT 1 FROM saved_searches WHERE id=? AND user_id=?",
+          )
+            .bind(String(search.id), auth.user.id)
+            .first()
+        )
+          continue;
+        const query = (search.query || {}) as Record<string, unknown>;
+        await handleSavedSearches(
+          env,
+          auth,
+          send("saved-searches", {
+            ...search,
+            query: {
+              ...query,
+              tag: query.tag ? tagMap.get(String(query.tag)) : undefined,
+            },
+          }),
+          ["saved-searches"],
+        );
+      }
+  }
+  return json({ created, skipped, uploadIds, errors });
+}
+
 async function handleExport(
   env: Env,
   auth: AuthContext,
@@ -1388,24 +1770,50 @@ async function handleExport(
     env,
     auth.user.id,
     new Request(`${env.APP_ORIGIN}/api/v1/entries?status=active`),
+    true,
   );
   const archived = await listEntries(
     env,
     auth.user.id,
     new Request(`${env.APP_ORIGIN}/api/v1/entries?status=archived`),
+    true,
   );
   const trashed = await listEntries(
     env,
     auth.user.id,
     new Request(`${env.APP_ORIGIN}/api/v1/entries?status=trashed`),
+    true,
   );
   const all = [...entries, ...archived, ...trashed];
   if (format === "json")
     return json({
+      schemaVersion: 2,
       exportedAt: nowIso(),
-      timezone: auth.user.timezone,
+      timezone:
+        (
+          await env.DB.prepare(
+            "SELECT display_timezone FROM user_preferences WHERE user_id=?",
+          )
+            .bind(auth.user.id)
+            .first<{ display_timezone: string }>()
+        )?.display_timezone || auth.user.timezone,
       tags: await listTags(env, auth.user.id),
       entries: all,
+      preferences: preferences(
+        await env.DB.prepare("SELECT * FROM user_preferences WHERE user_id=?")
+          .bind(auth.user.id)
+          .first<Record<string, unknown>>(),
+      ),
+      templates: (
+        await env.DB.prepare("SELECT * FROM capture_templates WHERE user_id=?")
+          .bind(auth.user.id)
+          .all<Record<string, unknown>>()
+      ).results.map(captureTemplate),
+      savedSearches: (
+        await env.DB.prepare("SELECT * FROM saved_searches WHERE user_id=?")
+          .bind(auth.user.id)
+          .all<Record<string, unknown>>()
+      ).results.map(savedSearch),
     });
   if (format === "csv") {
     const headings = [
@@ -1421,6 +1829,7 @@ async function handleExport(
       "list_items",
       "created_at",
       "updated_at",
+      "record_json",
     ];
     const rows = all.map((entry) => [
       entry.id,
@@ -1435,6 +1844,7 @@ async function handleExport(
       JSON.stringify(entry.listItems),
       entry.createdAt,
       entry.updatedAt,
+      JSON.stringify(entry),
     ]);
     const csv = [headings, ...rows]
       .map((row) => row.map(csvCell).join(","))
@@ -1502,6 +1912,19 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
     });
   }
   const current = requireAuth(auth);
+  if (parts[0] === "stats" && request.method === "GET") {
+    const row = await env.DB.prepare(
+      "SELECT COUNT(*) AS entryCount, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS activeCount FROM entries WHERE user_id=?",
+    )
+      .bind(current.user.id)
+      .first();
+    const storage = await env.DB.prepare(
+      "SELECT COUNT(*) AS attachmentCount, COALESCE(SUM(size_bytes),0) AS attachmentBytes FROM attachments WHERE entry_id IN (SELECT id FROM entries WHERE user_id=?)",
+    )
+      .bind(current.user.id)
+      .first();
+    return json({ ...row, ...storage });
+  }
   if (parts[0] === "logout" && request.method === "POST") {
     requireMutationSecurity(env, request, current);
     await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?")
@@ -1512,6 +1935,12 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
       { headers: { "set-cookie": sessionCookie("", 0) } },
     );
   }
+  if (
+    parts[0] === "import" &&
+    parts[1] === "backup" &&
+    request.method === "POST"
+  )
+    return handleRestore(env, current, request);
   if (parts[0] === "entries") {
     if (parts[2] === "attachments")
       return handleAttachments(env, current, request, parts);
@@ -1541,7 +1970,15 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
         )
           .bind(current.user.id, key)
           .first<{ response_json: string }>();
-        if (previous) return json(JSON.parse(previous.response_json));
+        if (previous) {
+          const saved = JSON.parse(previous.response_json);
+          const entry = await loadEntry(
+            env,
+            current.user.id,
+            saved.entryId || saved.entry?.id,
+          );
+          if (entry) return json({ entry });
+        }
       }
       const response = { entry: await createEntry(env, current.user.id, body) };
       if (key)
@@ -1551,7 +1988,7 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
           .bind(
             current.user.id,
             key.slice(0, 100),
-            JSON.stringify(response),
+            JSON.stringify({ entryId: response.entry.id }),
             nowIso(),
           )
           .run();
@@ -1613,7 +2050,17 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
       )
         .bind(current.user.id)
         .all();
-      return json({ subscriptions: rows.results });
+      const endpoint = new URL(request.url).searchParams.get("endpoint");
+      const registered = endpoint
+        ? Boolean(
+            await env.DB.prepare(
+              "SELECT id FROM push_subscriptions WHERE user_id=? AND endpoint_hash=?",
+            )
+              .bind(current.user.id, await sha256(endpoint))
+              .first(),
+          )
+        : false;
+      return json({ subscriptions: rows.results, registered });
     }
     requireMutationSecurity(env, request, current);
     if (request.method === "POST") {

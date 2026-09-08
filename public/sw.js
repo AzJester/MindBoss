@@ -1,4 +1,4 @@
-const CACHE = "mindboss-shell-v4";
+const CACHE = "mindboss-shell-v5";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 const DB_NAME = "mindboss-offline";
 
@@ -6,7 +6,15 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
+      .then(async (cache) => {
+        const response = await fetch("/", { cache: "reload" });
+        if (!response.ok) throw new Error("Shell unavailable");
+        const html = await response.text();
+        const assets = [
+          ...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g),
+        ].map((match) => match[1]);
+        await cache.addAll([...SHELL, ...assets]);
+      })
       .then(() => self.skipWaiting()),
   );
 });
@@ -19,7 +27,9 @@ self.addEventListener("activate", (event) => {
         .then((keys) =>
           Promise.all(
             keys
-              .filter((key) => key !== CACHE)
+              .filter(
+                (key) => key.startsWith("mindboss-shell-") && key !== CACHE,
+              )
               .map((key) => caches.delete(key)),
           ),
         ),
@@ -30,9 +40,11 @@ self.addEventListener("activate", (event) => {
 
 function openDb() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(DB_NAME, 2);
     request.onupgradeneeded = () => {
       const db = request.result;
+      if (!db.objectStoreNames.contains("state"))
+        db.createObjectStore("state", { keyPath: "id" });
       if (!db.objectStoreNames.contains("shares"))
         db.createObjectStore("shares", { keyPath: "id" });
       if (!db.objectStoreNames.contains("outbox"))
@@ -45,10 +57,10 @@ function openDb() {
 
 async function storeShare(form) {
   const db = await openDb();
+  // Keep the entire share. The preview lets the user remove oversized or extra files.
   const files = form
     .getAll("files")
-    .filter((item) => item instanceof File && item.size <= 20 * 1024 * 1024)
-    .slice(0, 5);
+    .filter((item) => item instanceof File && item.size > 0);
   const value = {
     id: crypto.randomUUID(),
     title: String(form.get("title") || ""),
@@ -58,12 +70,20 @@ async function storeShare(form) {
     createdAt: new Date().toISOString(),
   };
   await new Promise((resolve, reject) => {
-    const request = db
-      .transaction("shares", "readwrite")
-      .objectStore("shares")
-      .put(value);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = db.transaction("shares", "readwrite");
+    transaction.objectStore("shares").put(value);
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error);
+    };
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error || new Error("Share was not saved"));
+    };
   });
 }
 
@@ -81,22 +101,27 @@ self.addEventListener("fetch", (event) => {
     );
     return;
   }
-  if (event.request.method !== "GET" || url.pathname.startsWith("/api/"))
+  if (
+    url.origin !== self.location.origin ||
+    event.request.method !== "GET" ||
+    url.pathname.startsWith("/api/")
+  )
     return;
   if (event.request.mode === "navigate") {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE).then((cache) => cache.put("/", copy));
+          // An unsuccessful navigation must not replace the working offline shell.
+          // Install updates the HTML and referenced assets together.
+          if (!response.ok) throw new Error("Navigation unavailable");
           return response;
         })
-        .catch(() => caches.match("/")),
+        .catch(() => caches.match("/", { ignoreVary: true })),
     );
     return;
   }
   event.respondWith(
-    caches.match(event.request).then(
+    caches.match(event.request, { ignoreVary: true }).then(
       (cached) =>
         cached ||
         fetch(event.request).then((response) => {
@@ -154,7 +179,7 @@ self.addEventListener("message", (event) => {
   if (event.data === "SKIP_WAITING") self.skipWaiting();
 });
 
-async function syncOutbox() {
+async function performSync() {
   const sessionResponse = await fetch("/api/v1/session", {
     credentials: "same-origin",
   });
@@ -207,16 +232,23 @@ async function syncOutbox() {
     }
     if (!uploaded) continue;
     await new Promise((resolve, reject) => {
-      const request = db
-        .transaction("outbox", "readwrite")
-        .objectStore("outbox")
-        .delete(item.id);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+      const transaction = db.transaction(["outbox", "shares"], "readwrite");
+      transaction.objectStore("outbox").delete(item.id);
+      transaction.objectStore("shares").delete(item.id);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () =>
+        reject(transaction.error || new Error("Acknowledgment failed"));
     });
   }
   const clients = await self.clients.matchAll({ type: "window" });
   clients.forEach((client) => client.postMessage({ type: "mindboss-synced" }));
+}
+
+async function syncOutbox() {
+  return navigator.locks
+    ? navigator.locks.request("mindboss-sync", performSync)
+    : performSync();
 }
 
 self.addEventListener("sync", (event) => {

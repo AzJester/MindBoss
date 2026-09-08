@@ -10,6 +10,9 @@ import type {
   UserPreferences,
 } from "../shared/types";
 import { strToU8, zipSync } from "fflate";
+import { cacheValue, cachedValue, cacheIdentity } from "./offline";
+import type { AiEntry } from "../shared/ai";
+import { entryDueDates } from "../shared/time";
 
 const LOCAL_ENTRIES_KEY = "mindboss.local.entries";
 const LOCAL_TAGS_KEY = "mindboss.local.tags";
@@ -19,8 +22,8 @@ const LOCAL_PREFERENCES_KEY = "mindboss.local.preferences";
 const CSRF_KEY = "mindboss.csrf";
 export const isLocalMode =
   import.meta.env.VITE_LOCAL_MODE === "true" ||
-  location.hostname === "127.0.0.1" ||
-  location.hostname === "localhost";
+  (import.meta.env.VITE_LOCAL_MODE !== "false" &&
+    (location.hostname === "127.0.0.1" || location.hostname === "localhost"));
 
 export class ApiError extends Error {
   constructor(
@@ -195,7 +198,17 @@ function seedLocal(): void {
   writeLocal(LOCAL_ENTRIES_KEY, entries);
 }
 
-async function remote<T>(path: string, init: RequestInit = {}): Promise<T> {
+export let usingCachedData = false;
+function reportConnection(offline: boolean) {
+  usingCachedData = offline;
+  window.dispatchEvent(
+    new CustomEvent("mindboss-connection", { detail: { offline } }),
+  );
+}
+export async function remote<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
   const csrfToken =
     localStorage.getItem(CSRF_KEY) || sessionStorage.getItem(CSRF_KEY) || "";
   const headers = new Headers(init.headers);
@@ -203,11 +216,22 @@ async function remote<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.set("content-type", "application/json");
   if (init.method && init.method !== "GET")
     headers.set("x-csrf-token", csrfToken);
-  const response = await fetch(`/api/v1${path}`, {
-    ...init,
-    headers,
-    credentials: "same-origin",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1${path}`, {
+      ...init,
+      headers,
+      credentials: "same-origin",
+    });
+  } catch (error) {
+    reportConnection(true);
+    if ((!init.method || init.method === "GET") && path !== "/session") {
+      const cached = await cachedValue<T>("api:" + path);
+      if (cached !== undefined) return cached;
+    }
+    throw error;
+  }
+  reportConnection(false);
   if (!response.ok) {
     let body: {
       error?: { code?: string; message?: string; details?: unknown };
@@ -225,7 +249,10 @@ async function remote<T>(path: string, init: RequestInit = {}): Promise<T> {
     );
   }
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  const value = (await response.json()) as T;
+  if ((!init.method || init.method === "GET") && path !== "/session")
+    await cacheValue("api:" + path, value).catch(() => undefined);
+  return value;
 }
 
 export async function getSession(): Promise<Session> {
@@ -240,7 +267,16 @@ export async function getSession(): Promise<Session> {
     sessionStorage.removeItem(CSRF_KEY);
     return session;
   }
-  const session = await remote<Session>("/session");
+  let session: Session;
+  try {
+    session = await remote<Session>("/session");
+    await cacheIdentity(session);
+  } catch (error) {
+    const cached = await cachedValue<Session>("session");
+    if (!(error instanceof ApiError) && cached?.authenticated)
+      return { ...cached, offline: true };
+    throw error;
+  }
   if (session.csrfToken) {
     localStorage.setItem(CSRF_KEY, session.csrfToken);
     sessionStorage.removeItem(CSRF_KEY);
@@ -274,10 +310,7 @@ export async function getEntries(query: EntryQuery = {}): Promise<Entry[]> {
       )
       .filter((entry) => {
         if (!query.due) return true;
-        const dueValues = [
-          entry.reminderAt,
-          ...entry.listItems.map((item) => item.dueAt),
-        ].filter(Boolean) as string[];
+        const dueValues = entryDueDates(entry);
         const now = new Date();
         const start = new Date(now);
         start.setHours(0, 0, 0, 0);
@@ -328,7 +361,16 @@ export async function getEntries(query: EntryQuery = {}): Promise<Entry[]> {
       .filter(([, value]) => value)
       .map(([key, value]) => [key, String(value)]),
   );
-  return (await remote<{ entries: Entry[] }>(`/entries?${params}`)).entries;
+  const entries: Entry[] = [];
+  params.set("limit", "100");
+  for (let offset = 0; ; offset += 100) {
+    params.set("offset", String(offset));
+    const page = (await remote<{ entries: Entry[] }>(`/entries?${params}`))
+      .entries;
+    entries.push(...page);
+    if (page.length < 100) break;
+  }
+  return [...new Map(entries.map((entry) => [entry.id, entry])).values()];
 }
 
 export async function getEntry(id: string): Promise<Entry> {
@@ -337,6 +379,14 @@ export async function getEntry(id: string): Promise<Entry> {
       (item) => item.id === id,
     );
     if (!entry) throw new ApiError("entry_not_found", "Entry not found.", 404);
+    entry.lastViewedAt = new Date().toISOString();
+    entry.viewCount += 1;
+    writeLocal(
+      LOCAL_ENTRIES_KEY,
+      readLocal<Entry[]>(LOCAL_ENTRIES_KEY, []).map((item) =>
+        item.id === id ? entry : item,
+      ),
+    );
     return entry;
   }
   return (await remote<{ entry: Entry }>(`/entries/${encodeURIComponent(id)}`))
@@ -376,6 +426,8 @@ function localAutoTags(entry: Entry, allTags: Tag[]): Entry {
 export async function createEntry(input: EntryInput): Promise<Entry> {
   if (isLocalMode) {
     const entries = readLocal<Entry[]>(LOCAL_ENTRIES_KEY, []);
+    const existing = entries.find((entry) => entry.id === input.id);
+    if (existing) return existing;
     const tags = readLocal<Tag[]>(LOCAL_TAGS_KEY, []);
     const now = new Date().toISOString();
     const entry: Entry = localAutoTags(
@@ -740,6 +792,8 @@ export async function savePreferences(
 ): Promise<UserPreferences> {
   if (isLocalMode) {
     const next = { ...(await getPreferences()), ...changes };
+    if (next.lastWeeklyReviewAt === "now")
+      next.lastWeeklyReviewAt = new Date().toISOString();
     writeLocal(LOCAL_PREFERENCES_KEY, next);
     return next;
   }
@@ -784,8 +838,13 @@ export async function runAi(input: {
     | "weekly_review"
     | "find_duplicates";
   request?: string;
-  entries: Array<{ title: string; body: string; tags: string[] }>;
-}): Promise<{ text: string; model: string; inputChars: number }> {
+  entries: AiEntry[];
+}): Promise<{
+  text: string;
+  model: string;
+  inputChars: number;
+  incomplete?: boolean;
+}> {
   if (isLocalMode)
     throw new ApiError(
       "ai_remote_required",
@@ -978,6 +1037,7 @@ export async function downloadFullBackup(): Promise<void> {
 export async function logout(): Promise<void> {
   if (isLocalMode) return;
   await remote("/logout", { method: "POST", body: JSON.stringify({}) });
+  await cacheIdentity({ authenticated: false });
   localStorage.removeItem(CSRF_KEY);
   sessionStorage.removeItem(CSRF_KEY);
 }

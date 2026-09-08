@@ -1,6 +1,6 @@
 {
   "name": "mindboss",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -41,12 +41,18 @@
     "@vitejs/plugin-react": "^6.1.1",
     "fflate": "^0.8.2",
     "jsdom": "^29.1.1",
+    "miniflare": "5.20260907.0-alpha",
     "prettier": "^3.6.2",
     "sharp": "^0.35.4",
     "typescript": "^5.7.2",
     "vite": "^8.2.2",
     "vitest": "^5.0.0",
     "wrangler": "^4.35.0"
+  },
+  "overrides": {
+    "miniflare": {
+      "sharp": "$sharp"
+    }
   },
   "engines": {
     "node": ">=20"

@@ -20,8 +20,7 @@ describe("reminder delivery safety", () => {
 
   it("honors quiet hours and advances recurring reminders", () => {
     expect(worker).toContain("quiet_start, quiet_end");
-    expect(worker).toContain('rule === "weekdays"');
-    expect(worker).toContain('rule === "monthly"');
+    expect(worker).toContain("nextRecurrence");
     expect(worker).toContain('nextAt ? "pending" : "delivered"');
   });
 });
