@@ -15,6 +15,7 @@ import {
   ArrowUp,
   Bell,
   BellRing,
+  CalendarDays,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -99,6 +100,7 @@ import {
 } from "./offline";
 import {
   dateKeyForTimeZone,
+  dueDateForDateKey,
   formatDateTime,
   isDue,
   parseReminder,
@@ -877,7 +879,11 @@ function Composer({
         </label>
         {value.kind === "list" ? (
           <div className="list-editor">
-            <span className="field-label">Items</span>
+            <div className="list-edit-columns" aria-hidden="true">
+              <span>Items</span>
+              <span>Due</span>
+              <span>Actions</span>
+            </div>
             {value.listItems.map((item, index) => (
               <div className="list-edit-row" key={item.id}>
                 <button
@@ -918,29 +924,70 @@ function Composer({
                   }
                   placeholder={index === 0 ? "First item" : "Next item"}
                 />
-                <input
-                  className="item-due-date"
-                  type="date"
-                  aria-label={`Due date for ${item.text || `item ${index + 1}`}`}
-                  value={item.dueAt?.slice(0, 10) || ""}
-                  onChange={(event) =>
-                    update(
-                      "listItems",
-                      value.listItems.map((current) =>
-                        current.id === item.id
-                          ? {
-                              ...current,
-                              dueAt: event.target.value
-                                ? new Date(
-                                    `${event.target.value}T17:00:00-07:00`,
-                                  ).toISOString()
-                                : null,
-                            }
-                          : current,
-                      ),
-                    )
-                  }
-                />
+                <div className="item-due-control">
+                  <span className="mobile-due-label">Due</span>
+                  <label
+                    className={`item-due-button ${item.dueAt ? "has-date" : ""}`}
+                  >
+                    <CalendarDays size={19} aria-hidden="true" />
+                    <span>
+                      {item.dueAt
+                        ? new Intl.DateTimeFormat("en-US", {
+                            timeZone,
+                            month: "short",
+                            day: "numeric",
+                          }).format(new Date(item.dueAt))
+                        : "Set date"}
+                    </span>
+                    <input
+                      className="item-due-date"
+                      type="date"
+                      aria-label={`Due date for ${item.text || `item ${index + 1}`}`}
+                      value={
+                        item.dueAt
+                          ? dateKeyForTimeZone(item.dueAt, timeZone)
+                          : ""
+                      }
+                      onChange={(event) =>
+                        update(
+                          "listItems",
+                          value.listItems.map((current) =>
+                            current.id === item.id
+                              ? {
+                                  ...current,
+                                  dueAt: event.target.value
+                                    ? dueDateForDateKey(
+                                        event.target.value,
+                                        timeZone,
+                                      ).toISOString()
+                                    : null,
+                                }
+                              : current,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                  {item.dueAt && (
+                    <button
+                      type="button"
+                      className="clear-item-due"
+                      aria-label={`Clear due date for ${item.text || `item ${index + 1}`}`}
+                      onClick={() =>
+                        update(
+                          "listItems",
+                          value.listItems.map((current) =>
+                            current.id === item.id
+                              ? { ...current, dueAt: null }
+                              : current,
+                          ),
+                        )
+                      }
+                    >
+                      <X size={15} />
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
                   aria-label="Move item up"

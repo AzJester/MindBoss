@@ -69,6 +69,22 @@ test("creates, reorders, and completes a list", async ({ page }) => {
   const items = page.getByPlaceholder(/item/);
   await items.nth(0).fill("First task");
   await items.nth(1).fill("Second task");
+  await expect(
+    page
+      .locator(".list-edit-columns span:visible, .mobile-due-label:visible", {
+        hasText: /^Due$/,
+      })
+      .first(),
+  ).toBeVisible();
+  const dueInput = page.locator(
+    'input.item-due-date[aria-label="Due date for First task"]',
+  );
+  const dueButton = dueInput.locator("xpath=..");
+  const dueBox = await dueButton.boundingBox();
+  expect(dueBox?.width).toBeGreaterThanOrEqual(100);
+  expect(dueBox?.height).toBeGreaterThanOrEqual(40);
+  await dueInput.fill("2026-09-10", { force: true });
+  await expect(dueButton).toContainText("Sep 10");
   await page.getByRole("button", { name: "Move item up" }).nth(1).click();
   await page.getByRole("button", { name: "Save to Mind Boss" }).click();
   await page.getByText("Second task").click();

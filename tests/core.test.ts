@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { decryptString, encryptString } from "../functions/api/_lib";
 import {
+  dateKeyForTimeZone,
+  dueDateForDateKey,
   formatDateTime,
   parseReminder,
   tomorrowMorning,
@@ -93,6 +95,11 @@ describe("Phoenix reminders", () => {
     expect(tomorrowMorning(reference).toISOString()).toBe(
       "2026-09-09T16:00:00.000Z",
     );
+  });
+
+  it("keeps a checklist due date on the selected Arizona day", () => {
+    const dueAt = dueDateForDateKey("2026-09-09", "America/Phoenix");
+    expect(dateKeyForTimeZone(dueAt, "America/Phoenix")).toBe("2026-09-09");
   });
 });
 

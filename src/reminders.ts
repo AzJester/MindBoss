@@ -56,6 +56,16 @@ export function dateKeyForTimeZone(
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+export function dueDateForDateKey(
+  value: string,
+  timeZone = "America/Phoenix",
+): Date {
+  const [year, month, day] = value.split("-").map(Number);
+  const localGuess = Date.UTC(year, month - 1, day, 17, 0, 0, 0);
+  const offset = timeZoneOffsetMinutes(timeZone, new Date(localGuess));
+  return new Date(localGuess - offset * 60_000);
+}
+
 export function timeZoneOffsetMinutes(
   timeZone: string,
   reference = new Date(),
