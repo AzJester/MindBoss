@@ -1,0 +1,52 @@
+{
+  "name": "mindboss",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b",
+    "format": "prettier --write .",
+    "lint": "prettier --check . && tsc -b --pretty false",
+    "icons": "node scripts/generate-icons.mjs",
+    "db:migrate:local": "wrangler d1 migrations apply mindboss-production --local --persist-to .wrangler/state",
+    "pages:dev": "npm run build && wrangler pages dev dist --local --persist-to .wrangler/state --binding APP_ORIGIN=http://localhost:8788",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name mindboss",
+    "extension:package": "node scripts/package-extension.mjs"
+  },
+  "dependencies": {
+    "chrono-node": "^2.9.0",
+    "lucide-react": "^0.468.0",
+    "papaparse": "^5.4.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260908.1",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/papaparse": "^5.3.15",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/web-push": "^3.6.4",
+    "@playwright/test": "^1.63.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "fflate": "^0.8.2",
+    "jsdom": "^29.1.1",
+    "sharp": "^0.35.4",
+    "prettier": "^3.6.2",
+    "typescript": "^5.7.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.35.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

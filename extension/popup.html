@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>Mind Boss Clipper</title>
+  </head>
+  <body>
+    <header>
+      <span class="mark"><i></i><i></i><i></i></span
+      ><span>Mind <strong>Boss</strong></span
+      ><b>CLIPPER</b>
+    </header>
+    <main>
+      <section id="setup" hidden>
+        <div class="eyebrow">CONNECT ONCE</div>
+        <h1>Connect your private inbox</h1>
+        <p>
+          Create a capture token in Mind Boss Settings, then paste it here. This
+          extension can only add clips.
+        </p>
+        <label
+          >Mind Boss address<input
+            id="endpoint"
+            value="https://mindboss.st-dba.com"
+            spellcheck="false"
+        /></label>
+        <label
+          >Connection token<input
+            id="token"
+            type="password"
+            placeholder="mbc_…"
+            autocomplete="off"
+        /></label>
+        <button id="connect">Save connection</button>
+      </section>
+      <section id="capture" hidden>
+        <div class="page-card">
+          <span id="hostname"></span><strong id="pageTitle"></strong
+          ><small id="pageUrl"></small>
+        </div>
+        <label
+          >Selected text<textarea
+            id="selection"
+            rows="4"
+            placeholder="Select text on the page or add something here"
+          ></textarea>
+        </label>
+        <label
+          >Your note<textarea
+            id="note"
+            rows="3"
+            placeholder="Why is this worth keeping?"
+          ></textarea>
+        </label>
+        <label
+          >Tags <small>comma separated</small
+          ><input id="tags" placeholder="READ, RESEARCH"
+        /></label>
+        <div class="actions">
+          <button id="settings" class="ghost">Connection</button
+          ><button id="save">Save to Mind Boss</button>
+        </div>
+      </section>
+      <div id="status" role="status"></div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
