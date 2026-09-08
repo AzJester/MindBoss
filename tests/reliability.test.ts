@@ -9,6 +9,42 @@ import { sendDueReminders, purgeExpired } from "../workers/reminders";
 
 afterEach(disposeTestDatabases);
 describe("real SQLite migrations and Pages API", () => {
+  it("returns numeric whole-library storage totals for empty and populated accounts", async () => {
+    const { db, call } = await testDatabase();
+    expect(await (await call("/stats")).json()).toEqual({
+      entryCount: 0,
+      activeCount: 0,
+      attachmentCount: 0,
+      attachmentBytes: 0,
+    });
+    for (const status of ["active", "archived", "trashed"]) {
+      const id = crypto.randomUUID();
+      await call("/entries", "POST", { id, kind: "note", title: status });
+      await db
+        .prepare("UPDATE entries SET status=? WHERE id=?")
+        .run(status, id);
+      await db
+        .prepare(
+          "INSERT INTO attachments(id,entry_id,r2_key,file_name,mime_type,size_bytes,sha256,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          crypto.randomUUID(),
+          id,
+          "key-" + status,
+          "file.png",
+          "image/png",
+          1048576,
+          "hash-" + status,
+          new Date().toISOString(),
+        );
+    }
+    expect(await (await call("/stats")).json()).toEqual({
+      entryCount: 3,
+      activeCount: 1,
+      attachmentCount: 3,
+      attachmentBytes: 3145728,
+    });
+  });
   it("creates, searches, updates ordered tasks atomically and rejects stale writes", async () => {
     const { call } = await testDatabase();
     const id = crypto.randomUUID();
