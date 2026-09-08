@@ -18,6 +18,13 @@ export const SUPPORTED_TIMEZONES = [
   "UTC",
 ] as const;
 
+export interface LibraryStats {
+  entryCount: number;
+  activeCount: number;
+  attachmentCount: number;
+  attachmentBytes: number;
+}
+
 export interface ListItem {
   id: string;
   text: string;

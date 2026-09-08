@@ -177,6 +177,19 @@ test("real API filters, offline recovery, details, and explicit AI selection", a
     page.getByRole("button", { name: "Run AI tool" }),
   ).toBeDisabled();
   expect(tag.name).toBe("CHECK");
+  await page.goto("https://mindboss.st-dba.com/?view=settings");
+  await expect(
+    page.getByText(/3 entries across Inbox, Archive and Trash/),
+  ).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Settings sections" })
+    .getByRole("button", { name: "data", exact: true })
+    .click();
+  await expect(
+    page.getByText(/3 entries · 0 attachments · 0.0 MB/),
+  ).toBeVisible();
+  await expect(page.locator(".utility-panel")).not.toContainText("undefined");
+  await expect(page.locator(".utility-panel")).not.toContainText("NaN");
 });
 test("calendar overflow, mobile agenda, light contrast and backup controls", async ({
   page,

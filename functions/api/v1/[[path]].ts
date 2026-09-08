@@ -1,4 +1,4 @@
-import type { Entry, EntryInput } from "../../../shared/types";
+import type { Entry, EntryInput, LibraryStats } from "../../../shared/types";
 import {
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
@@ -1914,7 +1914,7 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
   const current = requireAuth(auth);
   if (parts[0] === "stats" && request.method === "GET") {
     const row = await env.DB.prepare(
-      "SELECT COUNT(*) AS entryCount, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS activeCount FROM entries WHERE user_id=?",
+      "SELECT COUNT(*) AS entryCount, COALESCE(SUM(CASE WHEN status='active' THEN 1 ELSE 0 END),0) AS activeCount FROM entries WHERE user_id=?",
     )
       .bind(current.user.id)
       .first();
@@ -1923,7 +1923,13 @@ async function handleRequest(env: Env, request: Request): Promise<Response> {
     )
       .bind(current.user.id)
       .first();
-    return json({ ...row, ...storage });
+    const stats: LibraryStats = {
+      entryCount: Number(row?.entryCount ?? 0),
+      activeCount: Number(row?.activeCount ?? 0),
+      attachmentCount: Number(storage?.attachmentCount ?? 0),
+      attachmentBytes: Number(storage?.attachmentBytes ?? 0),
+    };
+    return json(stats);
   }
   if (parts[0] === "logout" && request.method === "POST") {
     requireMutationSecurity(env, request, current);

@@ -54,6 +54,7 @@ import type {
   EntryInput,
   EntryStatus,
   ListItem,
+  LibraryStats,
   RecurrenceRule,
   SavedSearch,
   Session,
@@ -1925,11 +1926,7 @@ function SettingsPanel({
   const [section, setSection] = useState("account"),
     [clipToken, setClipToken] = useState(""),
     [backupBusy, setBackupBusy] = useState(false);
-  const [stats, setStats] = useState<{
-      entries: number;
-      attachments: number;
-      bytes: number;
-    } | null>(null),
+  const [stats, setStats] = useState<LibraryStats | null>(null),
     [error, setError] = useState("");
   const [tokens, setTokens] = useState<
     Array<{
@@ -1954,18 +1951,17 @@ function SettingsPanel({
       ).then((groups) => {
         const all = groups.flat();
         setStats({
-          entries: all.length,
-          attachments: all.reduce((n, e) => n + e.attachments.length, 0),
-          bytes: all.reduce(
+          entryCount: all.length,
+          activeCount: all.filter((entry) => entry.status === "active").length,
+          attachmentCount: all.reduce((n, e) => n + e.attachments.length, 0),
+          attachmentBytes: all.reduce(
             (n, e) => n + e.attachments.reduce((v, a) => v + a.size, 0),
             0,
           ),
         });
       });
     } else {
-      void remote<{ entries: number; attachments: number; bytes: number }>(
-        "/stats",
-      )
+      void remote<LibraryStats>("/stats")
         .then(setStats)
         .catch((error) => setError(error.message));
     }
@@ -2019,7 +2015,7 @@ function SettingsPanel({
                 </p>
                 <p>
                   {stats
-                    ? stats.entries +
+                    ? stats.entryCount +
                       " entries across Inbox, Archive and Trash."
                     : "Checking library…"}{" "}
                   {tags.length} tags.
@@ -2240,11 +2236,11 @@ function SettingsPanel({
                 <h3>Complete library storage</h3>
                 <p>
                   {stats
-                    ? stats.entries +
+                    ? stats.entryCount +
                       " entries · " +
-                      stats.attachments +
+                      stats.attachmentCount +
                       " attachments · " +
-                      (stats.bytes / 1024 / 1024).toFixed(1) +
+                      (stats.attachmentBytes / 1024 / 1024).toFixed(1) +
                       " MB"
                     : "Loading account totals…"}
                 </p>
