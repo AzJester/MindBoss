@@ -178,7 +178,6 @@ function UserAvatar({ user }: { user: Session["user"] }) {
   const [failedUrl, setFailedUrl] = useState("");
   const avatarUrl = user?.avatarUrl.trim() || "";
   const showImage = Boolean(avatarUrl && failedUrl !== avatarUrl);
-  const fallback = user?.login.trim().slice(0, 1).toLocaleUpperCase() || "?";
 
   return showImage ? (
     <img
@@ -189,7 +188,7 @@ function UserAvatar({ user }: { user: Session["user"] }) {
     />
   ) : (
     <span className="avatar-fallback" aria-hidden="true">
-      {fallback}
+      MB
     </span>
   );
 }
