@@ -1190,7 +1190,7 @@ a {
   align-items: center;
   margin-bottom: 7px;
 }
-.list-edit-row button {
+.list-edit-row > button {
   width: 32px;
   height: 38px;
   border: 0;
@@ -1200,20 +1200,20 @@ a {
   place-items: center;
   cursor: pointer;
 }
-.list-edit-row button:first-child:hover {
+.list-edit-row > button:first-child:hover {
   color: var(--accent);
 }
-.list-edit-row button:last-child:hover {
+.list-edit-row > button:last-child:hover {
   color: var(--danger);
 }
-.list-edit-row button svg {
+.list-edit-row > button svg {
   width: 18px;
 }
-.list-edit-row button:disabled {
+.list-edit-row > button:disabled {
   opacity: 0.28;
   cursor: default;
 }
-.list-edit-row input {
+.list-edit-row > input {
   height: 40px;
   padding: 0 11px;
 }
@@ -2197,9 +2197,10 @@ a {
 }
 .item-due-control {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 .item-due-button {
   position: relative;
@@ -2257,10 +2258,16 @@ a {
   cursor: pointer;
 }
 .clear-item-due {
-  flex: 0 0 28px;
-  width: 28px !important;
-  height: 38px !important;
-  border-radius: 8px !important;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
 }
 .clear-item-due:hover {
   color: var(--danger) !important;

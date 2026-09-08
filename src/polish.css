@@ -164,23 +164,50 @@ html[data-theme="light"] .mobile-add {
 .list-edit-columns,
 .list-edit-row {
   grid-template-columns: 44px minmax(140px, 1fr) 170px 44px 44px 44px;
+  gap: 8px;
+}
+.list-edit-row > input {
+  height: 44px;
 }
 .list-edit-columns {
   font-size: 13px;
 }
+.date-control {
+  min-width: 0;
+  width: 100%;
+}
 .date-trigger {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 9px;
+  min-width: 0;
   min-height: 44px;
+  height: 44px;
   width: 100%;
-  padding: 0 12px;
+  padding: 0 10px;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   background: var(--panel-2);
-  color: var(--text);
+  color: var(--muted);
   font: inherit;
+  font-size: 14px;
+  line-height: 1.25;
+  text-align: left;
+  white-space: nowrap;
   cursor: pointer;
+}
+.date-trigger > span {
+  white-space: nowrap;
+}
+.date-trigger.has-date {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-dim);
+}
+.date-trigger:hover {
+  border-color: var(--accent);
+  background: var(--panel-3);
 }
 .date-trigger svg {
   color: var(--accent);
@@ -1250,6 +1277,11 @@ html[data-theme="light"] {
   }
   .item-due-control {
     align-self: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .item-due-control .clear-item-due {
+    /* On phones, Remove date is in the picker, leaving room for the date label. */
+    display: none;
   }
   .list-edit-row > button:not(:first-child) {
     align-self: end;
