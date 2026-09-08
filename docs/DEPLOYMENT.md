@@ -43,6 +43,19 @@ npx wrangler secret put PUSH_ENCRYPTION_KEY --config wrangler.reminders.toml
 
 Use the same `PUSH_ENCRYPTION_KEY` for Pages and the reminder Worker. Do not reuse the session secret.
 
+### Secure OpenAI connection
+
+Store the OpenAI API key only as a Cloudflare Pages secret. Never put it in
+GitHub, `wrangler.toml`, browser storage, or a build artifact.
+
+```bash
+npx wrangler pages secret put OPENAI_API_KEY --project-name mindboss
+```
+
+Mind Boss locks the integration to `gpt-5.4-mini`, sends only the preview the
+owner explicitly approves, sets `store: false`, and enforces 10 requests per
+UTC day and 200 requests per UTC month.
+
 ### Optional SMS capture
 
 Buy or assign one SMS-capable Twilio number, then add the following Pages secrets:

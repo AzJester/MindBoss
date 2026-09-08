@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Clock3,
   Globe2,
-  KeyRound,
   MessageSquareText,
   Save,
   Search,
@@ -27,9 +26,11 @@ import type {
 } from "../shared/types";
 import {
   deleteSavedSearch,
+  getAiStatus,
   getSmsStatus,
   runAi,
   saveSavedSearch,
+  type AiStatus,
   type SmsStatus,
 } from "./api";
 import { dateKeyForTimeZone, formatDateTime } from "./reminders";
@@ -342,10 +343,7 @@ export function AiPanel({
   entries: Entry[];
   notify: (message: string) => void;
 }) {
-  const [apiKey, setApiKey] = useState(
-    () => sessionStorage.getItem("mindboss.ai.key") || "",
-  );
-  const [model, setModel] = useState("gpt-5.4-mini");
+  const [status, setStatus] = useState<AiStatus | null>(null);
   const [action, setAction] =
     useState<Parameters<typeof runAi>[0]["action"]>("weekly_review");
   const [request, setRequest] = useState("");
@@ -357,14 +355,16 @@ export function AiPanel({
     (total, entry) => total + entry.title.length + entry.body.length,
     0,
   );
+  useEffect(() => {
+    void getAiStatus()
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  }, []);
   const submit = async () => {
     if (!consent) return notify("Review and approve the data preview first.");
-    sessionStorage.setItem("mindboss.ai.key", apiKey);
     setBusy(true);
     try {
       const response = await runAi({
-        apiKey,
-        model,
         action,
         request,
         entries: selected.map((entry) => ({
@@ -374,6 +374,7 @@ export function AiPanel({
         })),
       });
       setResult(response.text);
+      setStatus(await getAiStatus());
     } catch (error) {
       notify(error instanceof Error ? error.message : "AI request failed.");
     } finally {
@@ -390,24 +391,21 @@ export function AiPanel({
           Private AI workspace <small>optional</small>
         </h3>
         <p>
-          Your key stays in this browser session. Mind Boss sends only the
-          entries shown in the preview and asks OpenAI not to store the
-          response.
+          {status?.configured
+            ? "Securely connected. Your OpenAI key stays in a Cloudflare secret and is never sent to this browser."
+            : "OpenAI is not securely connected yet. Add the API key once as a Cloudflare secret to activate this workspace."}
         </p>
+        <div
+          className={`ai-connection-status ${status?.configured ? "connected" : ""}`}
+        >
+          <span />
+          {status
+            ? status.configured
+              ? `${status.model} connected · ${status.dailyLimit - status.usedToday} requests left today · ${status.monthlyLimit - status.usedThisMonth} left this month`
+              : "Secure connection required"
+            : "Checking secure connection…"}
+        </div>
         <div className="ai-grid">
-          <label className="field">
-            <span>OpenAI API key</span>
-            <div className="prefixed-input">
-              <KeyRound size={16} />
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-                placeholder="sk-…"
-                autoComplete="off"
-              />
-            </div>
-          </label>
           <label className="field">
             <span>Action</span>
             <select
@@ -423,13 +421,6 @@ export function AiPanel({
               <option value="extract_actions">Extract actions</option>
               <option value="find_duplicates">Find possible duplicates</option>
             </select>
-          </label>
-          <label className="field">
-            <span>Model</span>
-            <input
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-            />
           </label>
           <label className="field">
             <span>
@@ -455,6 +446,11 @@ export function AiPanel({
             ))}
           </ul>
         </details>
+        <p className="ai-data-note">
+          Only the preview you approve is sent. Requests use{" "}
+          <code>store: false</code>; standard API abuse-monitoring retention may
+          still apply.
+        </p>
         <label className="consent-row">
           <input
             type="checkbox"
@@ -465,7 +461,7 @@ export function AiPanel({
         </label>
         <button
           className="secondary-button"
-          disabled={busy || !apiKey || !selected.length}
+          disabled={busy || !status?.configured || !selected.length}
           onClick={submit}
         >
           <Sparkles size={16} /> {busy ? "Working…" : "Run AI tool"}

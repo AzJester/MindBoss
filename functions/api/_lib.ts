@@ -12,6 +12,7 @@ export interface Env {
   PUSH_ENCRYPTION_KEY: string;
   EXTENSION_ORIGIN?: string;
   VAPID_PUBLIC_KEY?: string;
+  OPENAI_API_KEY?: string;
   TWILIO_AUTH_TOKEN?: string;
   SMS_ALLOWED_FROM?: string;
   SMS_PHONE_NUMBER?: string;

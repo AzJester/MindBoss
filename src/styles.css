@@ -1258,6 +1258,39 @@ a {
 .settings-copy .secondary-button {
   min-height: 36px;
 }
+.ai-connection-status {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 30px;
+  margin: 12px 0 15px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--panel-2);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+}
+.ai-connection-status > span {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+.ai-connection-status.connected > span {
+  background: var(--accent);
+  box-shadow: 0 0 9px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.ai-data-note {
+  margin-top: 10px !important;
+  font-size: 10px !important;
+}
+.ai-data-note code {
+  color: var(--text);
+}
 .button-row {
   display: flex;
   flex-wrap: wrap;

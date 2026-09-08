@@ -714,9 +714,29 @@ export async function savePreferences(
   ).preferences;
 }
 
-export async function runAi(input: {
-  apiKey: string;
+export interface AiStatus {
+  configured: boolean;
   model: string;
+  dailyLimit: number;
+  monthlyLimit: number;
+  usedToday: number;
+  usedThisMonth: number;
+}
+
+export async function getAiStatus(): Promise<AiStatus> {
+  if (isLocalMode)
+    return {
+      configured: false,
+      model: "gpt-5.4-mini",
+      dailyLimit: 10,
+      monthlyLimit: 200,
+      usedToday: 0,
+      usedThisMonth: 0,
+    };
+  return remote("/ai");
+}
+
+export async function runAi(input: {
   action:
     | "summarize"
     | "ask"

@@ -408,28 +408,71 @@ const AI_ACTIONS = [
   "find_duplicates",
 ] as const;
 
+const AI_MODEL = "gpt-5.4-mini";
+const AI_DAILY_LIMIT = 10;
+const AI_MONTHLY_LIMIT = 200;
+
+function utcBoundary(period: "day" | "month"): string {
+  const now = new Date();
+  return new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      period === "month" ? 1 : now.getUTCDate(),
+    ),
+  ).toISOString();
+}
+
+async function aiUsage(env: Env, userId: number) {
+  const dayStart = utcBoundary("day");
+  const monthStart = utcBoundary("month");
+  const row = await env.DB.prepare(
+    `SELECT
+      SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS daily_count,
+      COUNT(*) AS monthly_count
+     FROM ai_events
+     WHERE user_id = ? AND created_at >= ?`,
+  )
+    .bind(dayStart, userId, monthStart)
+    .first<Record<string, unknown>>();
+  return {
+    dayStart,
+    monthStart,
+    daily: Number(row?.daily_count || 0),
+    monthly: Number(row?.monthly_count || 0),
+  };
+}
+
 export async function handleAi(
   env: Env,
   auth: AuthContext,
   request: Request,
 ): Promise<Response> {
+  const usage = await aiUsage(env, auth.user.id);
+  const status = {
+    configured: Boolean(env.OPENAI_API_KEY?.startsWith("sk-")),
+    model: AI_MODEL,
+    dailyLimit: AI_DAILY_LIMIT,
+    monthlyLimit: AI_MONTHLY_LIMIT,
+    usedToday: usage.daily,
+    usedThisMonth: usage.monthly,
+  };
+  if (request.method === "GET") return json(status);
   if (request.method !== "POST")
     throw new HttpError(405, "method_not_allowed", "Method not allowed.");
   requireMutationSecurity(env, request, auth);
+  const apiKey = env.OPENAI_API_KEY?.trim() || "";
+  if (!status.configured)
+    throw new HttpError(
+      503,
+      "ai_not_configured",
+      "The secure OpenAI connection is not configured yet.",
+    );
   const body = await bodyObject(request);
   const action = AI_ACTIONS.includes(body.action as (typeof AI_ACTIONS)[number])
     ? String(body.action)
     : "summarize";
-  const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
-  if (!apiKey.startsWith("sk-"))
-    throw new HttpError(
-      400,
-      "ai_key_required",
-      "Enter an OpenAI API key for this session.",
-    );
-  const model = /^[a-z0-9._-]{2,80}$/i.test(String(body.model || ""))
-    ? String(body.model)
-    : "gpt-5.4-mini";
+  const model = AI_MODEL;
   const entries = Array.isArray(body.entries) ? body.entries.slice(0, 40) : [];
   const noteText = entries
     .map((item, index) => {
@@ -456,6 +499,37 @@ export async function handleAi(
   ]
     .filter(Boolean)
     .join("\n");
+  const claim = await env.DB.prepare(
+    `INSERT INTO ai_events(id, user_id, action, model, input_chars, created_at)
+     SELECT ?, ?, ?, ?, ?, ?
+     WHERE
+       (SELECT COUNT(*) FROM ai_events WHERE user_id = ? AND created_at >= ?) < ?
+       AND
+       (SELECT COUNT(*) FROM ai_events WHERE user_id = ? AND created_at >= ?) < ?`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      auth.user.id,
+      action,
+      model,
+      noteText.length,
+      nowIso(),
+      auth.user.id,
+      usage.dayStart,
+      AI_DAILY_LIMIT,
+      auth.user.id,
+      usage.monthStart,
+      AI_MONTHLY_LIMIT,
+    )
+    .run();
+  if (!claim.meta.changes)
+    throw new HttpError(
+      429,
+      "ai_usage_limit_reached",
+      usage.daily >= AI_DAILY_LIMIT
+        ? "Mind Boss reached its 10-request daily AI limit. Try again tomorrow."
+        : "Mind Boss reached its 200-request monthly AI limit. Try again next month.",
+    );
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -497,17 +571,5 @@ export async function handleAi(
     .join("\n");
   if (!text)
     throw new HttpError(502, "ai_response_empty", "OpenAI returned no text.");
-  await env.DB.prepare(
-    "INSERT INTO ai_events(id, user_id, action, model, input_chars, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-  )
-    .bind(
-      crypto.randomUUID(),
-      auth.user.id,
-      action,
-      model,
-      noteText.length,
-      nowIso(),
-    )
-    .run();
   return json({ text, model, inputChars: noteText.length });
 }
