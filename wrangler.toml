@@ -5,7 +5,7 @@ pages_build_output_dir = "./dist"
 [[d1_databases]]
 binding = "DB"
 database_name = "mindboss-production"
-database_id = "replace-with-production-d1-id"
+database_id = "748780d4-a462-4837-9a64-f13f2a3fe3e9"
 
 [[r2_buckets]]
 binding = "ATTACHMENTS"
@@ -13,5 +13,19 @@ bucket_name = "mindboss-production-attachments"
 
 [vars]
 APP_ORIGIN = "https://mindboss.st-dba.com"
+ALLOWED_GITHUB_USER_ID = "127560421"
+EXTENSION_ORIGIN = "chrome-extension://leaohbibobpmkglcmgkopckkkhabbfkd"
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "mindboss-preview"
+database_id = "776841bc-31be-4fdf-bae1-e9719f8bc69a"
+
+[[env.preview.r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "mindboss-preview-attachments"
+
+[env.preview.vars]
+APP_ORIGIN = "https://mindboss.pages.dev"
 ALLOWED_GITHUB_USER_ID = "127560421"
 EXTENSION_ORIGIN = "chrome-extension://leaohbibobpmkglcmgkopckkkhabbfkd"
