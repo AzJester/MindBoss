@@ -97,6 +97,7 @@ import {
   type SharedCapture,
 } from "./offline";
 import {
+  dateKeyForTimeZone,
   formatDateTime,
   isDue,
   parseReminder,
@@ -105,12 +106,14 @@ import {
 import {
   AdvancedSearchPanel,
   AiPanel,
+  AppearanceCard,
   OnboardingChecklist,
   PreferencesCard,
   ReviewQueue,
   SmsCard,
   TodaySummary,
 } from "./workflow-panels";
+import { EntryLayouts, ViewControls } from "./view-layouts";
 
 type View =
   | "today"
@@ -166,7 +169,7 @@ function freshDraft(kind: Entry["kind"] = "note"): Draft {
   };
 }
 
-function draftFromEntry(entry: Entry): Draft {
+function draftFromEntry(entry: Entry, timeZone = "America/Phoenix"): Draft {
   return {
     id: entry.id,
     kind: entry.kind,
@@ -175,7 +178,9 @@ function draftFromEntry(entry: Entry): Draft {
     body: entry.body,
     sourceUrl: entry.sourceUrl || "",
     sourceTitle: entry.sourceTitle || "",
-    reminderText: entry.reminderAt ? formatDateTime(entry.reminderAt) : "",
+    reminderText: entry.reminderAt
+      ? formatDateTime(entry.reminderAt, timeZone)
+      : "",
     reminderAt: entry.reminderAt,
     recurrenceRule: entry.recurrenceRule,
     reviewAt: entry.reviewAt,
@@ -357,10 +362,12 @@ function EmptyState({ view, onAdd }: { view: View; onAdd: () => void }) {
 
 function EntryCard({
   entry,
+  timeZone,
   onEdit,
   onChange,
 }: {
   entry: Entry;
+  timeZone: string;
   onEdit: (entry: Entry) => void;
   onChange: (entry: Entry, changes: Record<string, unknown>) => Promise<void>;
 }) {
@@ -397,6 +404,7 @@ function EntryCard({
           )}
           <time>
             {new Intl.DateTimeFormat("en-US", {
+              timeZone,
               month: "short",
               day: "numeric",
               hour: "numeric",
@@ -453,6 +461,7 @@ function EntryCard({
               {item.dueAt && !item.completedAt && (
                 <small className={isDue(item.dueAt) ? "due" : ""}>
                   {new Date(item.dueAt).toLocaleDateString([], {
+                    timeZone,
                     month: "short",
                     day: "numeric",
                   })}
@@ -466,14 +475,15 @@ function EntryCard({
         <div
           className={`reminder-chip ${isDue(entry.reminderAt) ? "due" : ""}`}
         >
-          <BellRing size={14} /> {formatDateTime(entry.reminderAt)}
+          <BellRing size={14} /> {formatDateTime(entry.reminderAt, timeZone)}
           {entry.reminderState === "completed" && " · Done"}
           {entry.recurrenceRule && ` · ${entry.recurrenceRule}`}
         </div>
       )}
       {entry.reviewAt && (
         <div className="review-chip">
-          <Sparkles size={13} /> Review {formatDateTime(entry.reviewAt)}
+          <Sparkles size={13} /> Review{" "}
+          {formatDateTime(entry.reviewAt, timeZone)}
         </div>
       )}
       {entry.attachments.length > 0 && (
@@ -595,7 +605,10 @@ function EntryCard({
                       <button
                         onClick={() =>
                           change({
-                            reminderAt: tomorrowMorning().toISOString(),
+                            reminderAt: tomorrowMorning(
+                              new Date(),
+                              timeZone,
+                            ).toISOString(),
                             reminderState: "pending",
                           })
                         }
@@ -621,6 +634,7 @@ function EntryCard({
 
 function Composer({
   draft,
+  timeZone,
   tags,
   templates,
   onClose,
@@ -629,6 +643,7 @@ function Composer({
   onTemplateSaved,
 }: {
   draft: Draft;
+  timeZone: string;
   tags: Tag[];
   templates: CaptureTemplate[];
   onClose: () => void;
@@ -642,8 +657,10 @@ function Composer({
   const [processingFiles, setProcessingFiles] = useState(false);
   const parsedReminder = useMemo(
     () =>
-      value.kind === "reminder" ? parseReminder(value.reminderText) : null,
-    [value.kind, value.reminderText],
+      value.kind === "reminder"
+        ? parseReminder(value.reminderText, new Date(), timeZone)
+        : null,
+    [value.kind, value.reminderText, timeZone],
   );
   useEffect(() => {
     saveDraft({ ...value, files: [] });
@@ -1007,7 +1024,8 @@ function Composer({
               />
               {parsedReminder && (
                 <small className="parse-preview">
-                  <Check size={14} /> {formatDateTime(parsedReminder)} Arizona
+                  <Check size={14} /> {formatDateTime(parsedReminder, timeZone)}{" "}
+                  {timeZone.replaceAll("_", " ")}
                   time
                 </small>
               )}
@@ -1804,6 +1822,10 @@ function SettingsPanel({
           preferences={preferences}
           onChange={(next) => void updatePreferences(next)}
         />
+        <AppearanceCard
+          preferences={preferences}
+          onChange={(next) => void updatePreferences(next)}
+        />
         <div className="settings-card">
           <div className="settings-icon">
             <BellRing />
@@ -1969,7 +1991,10 @@ function SettingsPanel({
           </div>
           <div className="settings-copy">
             <h3>{session.user?.login}</h3>
-            <p>Authorized through GitHub · Arizona time</p>
+            <p>
+              Authorized through GitHub ·{" "}
+              {preferences.displayTimezone.replaceAll("_", " ")}
+            </p>
           </div>
           <button
             className="secondary-button"
@@ -2019,6 +2044,15 @@ export default function App() {
     quietStart: null,
     quietEnd: null,
     weeklyReviewDay: 0,
+    viewMode: "feed",
+    groupByTime: false,
+    compactView: false,
+    hideTagNav: false,
+    theme: "dark",
+    fontFamily: "system",
+    displayTimezone: "America/Phoenix",
+    boardTagIds: [],
+    sortOrder: "newest",
   });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
@@ -2035,6 +2069,29 @@ export default function App() {
     window.clearTimeout(noticeTimer.current);
     noticeTimer.current = window.setTimeout(() => setNotice(""), 4200);
   }, []);
+
+  const updateLayoutPreferences = (changes: Partial<UserPreferences>) => {
+    const next = { ...preferences, ...changes };
+    setPreferences(next);
+    if (changes.sortOrder) setSort(changes.sortOrder);
+    void savePreferences(changes)
+      .then((saved) => {
+        setPreferences(saved);
+        setSort(saved.sortOrder);
+      })
+      .catch((error) =>
+        notify(
+          error instanceof Error
+            ? error.message
+            : "Could not save view settings.",
+        ),
+      );
+  };
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = preferences.theme;
+    document.documentElement.dataset.font = preferences.fontFamily;
+  }, [preferences.theme, preferences.fontFamily]);
 
   const statusForView = (next: View): EntryStatus =>
     next === "archive" ? "archived" : next === "trash" ? "trashed" : "active";
@@ -2089,12 +2146,15 @@ export default function App() {
         setSavedSearches(nextSearches);
         setTemplates(nextTemplates);
         setPreferences(nextPreferences);
+        setSort(nextPreferences.sortOrder);
         setPendingCount(await outboxCount().catch(() => 0));
         const targetEntryId = new URLSearchParams(location.search).get("entry");
         if (targetEntryId) {
           const targetEntry = await getEntry(targetEntryId).catch(() => null);
           if (targetEntry) {
-            setDraft(draftFromEntry(targetEntry));
+            setDraft(
+              draftFromEntry(targetEntry, nextPreferences.displayTimezone),
+            );
             const url = new URL(location.href);
             url.searchParams.delete("entry");
             history.replaceState({}, "", url);
@@ -2133,11 +2193,11 @@ export default function App() {
     const entryId = new URLSearchParams(location.search).get("entry");
     const entry = entryId ? entries.find((item) => item.id === entryId) : null;
     if (!entry || draft) return;
-    setDraft(draftFromEntry(entry));
+    setDraft(draftFromEntry(entry, preferences.displayTimezone));
     const url = new URL(location.href);
     url.searchParams.delete("entry");
     history.replaceState({}, "", url);
-  }, [entries, draft]);
+  }, [entries, draft, preferences.displayTimezone]);
   useEffect(() => {
     if (!session?.authenticated) return;
     const refreshWhenActive = () => {
@@ -2402,11 +2462,10 @@ export default function App() {
   const todayEntries =
     view === "today"
       ? entries.filter((entry) => {
-          const start = new Date();
-          start.setHours(0, 0, 0, 0);
-          const end = new Date(start);
-          end.setDate(end.getDate() + 1);
-          const created = new Date(entry.createdAt);
+          const today = dateKeyForTimeZone(
+            new Date(),
+            preferences.displayTimezone,
+          );
           const due = [
             entry.reminderState === "completed" ? null : entry.reminderAt,
             ...entry.listItems
@@ -2414,14 +2473,20 @@ export default function App() {
               .map((item) => item.dueAt),
           ].filter(Boolean) as string[];
           return (
-            (created >= start && created < end) ||
-            due.some((value) => new Date(value) < end)
+            dateKeyForTimeZone(entry.createdAt, preferences.displayTimezone) ===
+              today ||
+            due.some(
+              (value) =>
+                dateKeyForTimeZone(value, preferences.displayTimezone) <= today,
+            )
           );
         })
       : entries;
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell ${preferences.compactView ? "compact-mode" : ""}`}
+    >
       <aside className={`sidebar ${mobileNav ? "is-open" : ""}`}>
         <div className="sidebar-top">
           <Logo />
@@ -2451,22 +2516,26 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-label">YOUR TAGS</div>
-        <div className="sidebar-tags">
-          {tags.slice(0, 7).map((tag) => (
-            <button
-              key={tag.id}
-              className={selectedTag === tag.id ? "active" : ""}
-              onClick={() => {
-                setSelectedTag(selectedTag === tag.id ? "" : tag.id);
-                setView("inbox");
-                setMobileNav(false);
-              }}
-            >
-              <span style={{ background: tag.color }} />#{tag.name}
-            </button>
-          ))}
-        </div>
+        {!preferences.hideTagNav && (
+          <>
+            <div className="sidebar-label">YOUR TAGS</div>
+            <div className="sidebar-tags">
+              {tags.slice(0, 7).map((tag) => (
+                <button
+                  key={tag.id}
+                  className={selectedTag === tag.id ? "active" : ""}
+                  onClick={() => {
+                    setSelectedTag(selectedTag === tag.id ? "" : tag.id);
+                    setView("inbox");
+                    setMobileNav(false);
+                  }}
+                >
+                  <span style={{ background: tag.color }} />#{tag.name}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         <div className="sidebar-bottom">
           <button
             className={view === "tags" ? "active" : ""}
@@ -2576,16 +2645,12 @@ export default function App() {
                   </p>
                 </div>
                 <div className="heading-actions">
-                  <select
-                    value={sort}
-                    onChange={(event) =>
-                      setSort(event.target.value as "newest" | "oldest")
-                    }
-                    aria-label="Sort entries"
-                  >
-                    <option value="newest">Newest first</option>
-                    <option value="oldest">Oldest first</option>
-                  </select>
+                  {view !== "review" && (
+                    <ViewControls
+                      preferences={preferences}
+                      onChange={updateLayoutPreferences}
+                    />
+                  )}
                   <button
                     className="primary-button"
                     onClick={() =>
@@ -2602,7 +2667,12 @@ export default function App() {
                   </button>
                 </div>
               </section>
-              {view === "today" && <TodaySummary entries={entries} />}
+              {view === "today" && (
+                <TodaySummary
+                  entries={entries}
+                  timeZone={preferences.displayTimezone}
+                />
+              )}
               {["inbox", "lists", "reminders", "archive", "trash"].includes(
                 view,
               ) && (
@@ -2636,7 +2706,10 @@ export default function App() {
               ) : view === "review" ? (
                 <ReviewQueue
                   entries={entries}
-                  onOpen={(entry) => setDraft(draftFromEntry(entry))}
+                  timeZone={preferences.displayTimezone}
+                  onOpen={(entry) =>
+                    setDraft(draftFromEntry(entry, preferences.displayTimezone))
+                  }
                   onReviewLater={(entry) =>
                     void changeEntry(entry, {
                       version: entry.version,
@@ -2647,16 +2720,38 @@ export default function App() {
                   }
                 />
               ) : todayEntries.length ? (
-                <section className="entry-grid">
-                  {todayEntries.map((entry) => (
+                <EntryLayouts
+                  entries={todayEntries}
+                  tags={tags}
+                  preferences={preferences}
+                  onPreferences={updateLayoutPreferences}
+                  onOpen={(entry) =>
+                    setDraft(draftFromEntry(entry, preferences.displayTimezone))
+                  }
+                  onMove={(entry, tagId) => {
+                    const tagIds = entry.tags
+                      .map((tag) => tag.id)
+                      .filter((id) => !preferences.boardTagIds.includes(id));
+                    if (tagId) tagIds.push(tagId);
+                    void changeEntry(entry, {
+                      version: entry.version,
+                      tagIds,
+                    });
+                  }}
+                  renderEntry={(entry) => (
                     <EntryCard
                       key={entry.id}
                       entry={entry}
-                      onEdit={(item) => setDraft(draftFromEntry(item))}
+                      timeZone={preferences.displayTimezone}
+                      onEdit={(item) =>
+                        setDraft(
+                          draftFromEntry(item, preferences.displayTimezone),
+                        )
+                      }
                       onChange={changeEntry}
                     />
-                  ))}
-                </section>
+                  )}
+                />
               ) : (
                 <EmptyState
                   view={view}
@@ -2706,6 +2801,7 @@ export default function App() {
       {draft && (
         <Composer
           draft={draft}
+          timeZone={preferences.displayTimezone}
           tags={tags}
           templates={templates}
           onClose={() => setDraft(null)}
@@ -2736,7 +2832,9 @@ export default function App() {
           conflict={conflict}
           onCancel={() => setConflict(null)}
           onUseServer={() => {
-            setDraft(draftFromEntry(conflict.server));
+            setDraft(
+              draftFromEntry(conflict.server, preferences.displayTimezone),
+            );
             setConflict(null);
             notify("Loaded the server version.");
           }}

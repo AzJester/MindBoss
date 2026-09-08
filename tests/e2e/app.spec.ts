@@ -102,6 +102,34 @@ test("shows Today and Review workflows", async ({ page, isMobile }) => {
   ).toBeVisible();
 });
 
+test("switches board, calendar, flex, and view options", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "Desktop layout workflow check");
+  await page.getByRole("button", { name: "Board", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Turn your tags into working columns" }),
+  ).toBeVisible();
+  const boardSetup = page.locator(".board-setup");
+  await boardSetup.getByRole("button", { name: "#IDEAS" }).click();
+  await boardSetup.getByRole("button", { name: "#READ" }).click();
+  await page.getByRole("button", { name: "Save board columns" }).click();
+  await expect(
+    page.getByRole("button", { name: "Configure columns" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Calendar", exact: true }).click();
+  await expect(page.getByRole("grid")).toBeVisible();
+
+  await page.getByRole("button", { name: "Flex", exact: true }).click();
+  await page.getByLabel("View options").click();
+  await page.getByLabel("Compact cards").check();
+  await page.getByLabel("Light mode").check();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(page.locator(".app-shell")).toHaveClass(/compact-mode/);
+});
+
 test("saves and reuses a capture template", async ({ page, isMobile }) => {
   test.skip(isMobile, "Desktop workflow check");
   await page.getByRole("button", { name: "Add", exact: true }).click();

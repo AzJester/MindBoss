@@ -4,6 +4,7 @@ import type {
   SavedSearch,
   UserPreferences,
 } from "../../shared/types";
+import { SUPPORTED_TIMEZONES } from "../../shared/types";
 import {
   HttpError,
   json,
@@ -257,6 +258,16 @@ function preferences(row?: Record<string, unknown> | null): UserPreferences {
     quietStart: row?.quiet_start ? String(row.quiet_start) : null,
     quietEnd: row?.quiet_end ? String(row.quiet_end) : null,
     weeklyReviewDay: Number(row?.weekly_review_day || 0),
+    viewMode: (row?.view_mode || "feed") as UserPreferences["viewMode"],
+    groupByTime: Boolean(row?.group_by_time),
+    compactView: Boolean(row?.compact_view),
+    hideTagNav: Boolean(row?.hide_tag_nav),
+    theme: (row?.theme || "dark") as UserPreferences["theme"],
+    fontFamily: (row?.font_family || "system") as UserPreferences["fontFamily"],
+    displayTimezone: (row?.display_timezone ||
+      "America/Phoenix") as UserPreferences["displayTimezone"],
+    boardTagIds: parseJson<string[]>(row?.board_tag_ids_json, []),
+    sortOrder: (row?.sort_order || "newest") as UserPreferences["sortOrder"],
   };
 }
 
@@ -304,12 +315,61 @@ export async function handlePreferences(
   const weeklyReviewDay = Number.isInteger(Number(body.weeklyReviewDay))
     ? Math.min(6, Math.max(0, Number(body.weeklyReviewDay)))
     : existing.weeklyReviewDay;
+  const choice = <T extends string>(
+    value: unknown,
+    allowed: readonly T[],
+    fallback: T,
+  ): T =>
+    allowed.includes(String(value) as T) ? (String(value) as T) : fallback;
+  const viewMode = choice(
+    body.viewMode,
+    ["feed", "board", "calendar", "flex"] as const,
+    existing.viewMode,
+  );
+  const theme = choice(
+    body.theme,
+    ["dark", "light", "system"] as const,
+    existing.theme,
+  );
+  const fontFamily = choice(
+    body.fontFamily,
+    ["system", "modern", "classic"] as const,
+    existing.fontFamily,
+  );
+  const displayTimezone = choice(
+    body.displayTimezone,
+    SUPPORTED_TIMEZONES,
+    existing.displayTimezone,
+  );
+  const sortOrder = choice(
+    body.sortOrder,
+    ["newest", "oldest"] as const,
+    existing.sortOrder,
+  );
+  const booleanValue = (key: string, fallback: boolean) =>
+    Object.prototype.hasOwnProperty.call(body, key)
+      ? body[key] === true
+      : fallback;
+  const boardTagIds = Object.prototype.hasOwnProperty.call(body, "boardTagIds")
+    ? [
+        ...new Set(
+          (Array.isArray(body.boardTagIds) ? body.boardTagIds : [])
+            .map((value) => String(value).slice(0, 64))
+            .filter(Boolean),
+        ),
+      ].slice(0, 5)
+    : existing.boardTagIds;
   const now = nowIso();
   await env.DB.prepare(
-    `INSERT INTO user_preferences(user_id, onboarding_json, default_capture_kind, quiet_start, quiet_end, weekly_review_day, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO user_preferences(user_id, onboarding_json, default_capture_kind, quiet_start, quiet_end, weekly_review_day,
+       view_mode, group_by_time, compact_view, hide_tag_nav, theme, font_family, display_timezone, board_tag_ids_json, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id) DO UPDATE SET onboarding_json = excluded.onboarding_json, default_capture_kind = excluded.default_capture_kind,
-       quiet_start = excluded.quiet_start, quiet_end = excluded.quiet_end, weekly_review_day = excluded.weekly_review_day, updated_at = excluded.updated_at`,
+       quiet_start = excluded.quiet_start, quiet_end = excluded.quiet_end, weekly_review_day = excluded.weekly_review_day,
+       view_mode = excluded.view_mode, group_by_time = excluded.group_by_time, compact_view = excluded.compact_view,
+       hide_tag_nav = excluded.hide_tag_nav, theme = excluded.theme, font_family = excluded.font_family,
+       display_timezone = excluded.display_timezone, board_tag_ids_json = excluded.board_tag_ids_json,
+       sort_order = excluded.sort_order, updated_at = excluded.updated_at`,
   )
     .bind(
       auth.user.id,
@@ -318,6 +378,15 @@ export async function handlePreferences(
       quietTime(body.quietStart, existing.quietStart),
       quietTime(body.quietEnd, existing.quietEnd),
       weeklyReviewDay,
+      viewMode,
+      booleanValue("groupByTime", existing.groupByTime) ? 1 : 0,
+      booleanValue("compactView", existing.compactView) ? 1 : 0,
+      booleanValue("hideTagNav", existing.hideTagNav) ? 1 : 0,
+      theme,
+      fontFamily,
+      displayTimezone,
+      JSON.stringify(boardTagIds),
+      sortOrder,
       now,
       now,
     )

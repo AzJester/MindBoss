@@ -671,14 +671,29 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   quietStart: null,
   quietEnd: null,
   weeklyReviewDay: 0,
+  viewMode: "feed",
+  groupByTime: false,
+  compactView: false,
+  hideTagNav: false,
+  theme: "dark",
+  fontFamily: "system",
+  displayTimezone: "America/Phoenix",
+  boardTagIds: [],
+  sortOrder: "newest",
 };
 
 export async function getPreferences(): Promise<UserPreferences> {
-  if (isLocalMode)
-    return readLocal<UserPreferences>(
+  if (isLocalMode) {
+    const stored = readLocal<Partial<UserPreferences>>(
       LOCAL_PREFERENCES_KEY,
-      DEFAULT_PREFERENCES,
+      {},
     );
+    return {
+      ...DEFAULT_PREFERENCES,
+      ...stored,
+      onboarding: { ...DEFAULT_PREFERENCES.onboarding, ...stored.onboarding },
+    };
+  }
   return (await remote<{ preferences: UserPreferences }>("/preferences"))
     .preferences;
 }

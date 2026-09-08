@@ -7,7 +7,9 @@ The app is designed for one authorized GitHub account, a Chrome clipper, and an 
 ## What is implemented
 
 - Responsive React and TypeScript application with Today, inbox, lists, reminders, review, archive, trash, tags, and settings.
-- Notes, ordered checklists with item due dates, natural-language and recurring reminders in `America/Phoenix`, quiet hours, pinning, copy, archive, restore, 30-day trash, and optimistic concurrency handling.
+- Feed, time-grouped, configurable tag board, monthly calendar, and flexible dense-grid views with synchronized compact, sort, and tag-navigation preferences.
+- Synchronized dark, light, and device-matched themes, three dashboard font styles, and a selectable display time zone that controls calendars, reminder parsing, snoozing, and quiet hours.
+- Notes, ordered checklists with item due dates, natural-language and recurring reminders, quiet hours, pinning, copy, archive, restore, 30-day trash, and optimistic concurrency handling.
 - Nested tags with whole-word, case-insensitive trigger rules. Manual tags are never removed by trigger recalculation.
 - Inline tag creation, reusable capture templates, pasted-link recognition, advanced filters, query syntax, and saved searches.
 - D1 FTS5 search over titles, bodies, source metadata, checklist items, PDF text, and image OCR text.

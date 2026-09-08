@@ -3,6 +3,20 @@ export type EntryStatus = "active" | "archived" | "trashed";
 export type CaptureSource =
   "web" | "android_share" | "chrome_extension" | "mindchuk_import";
 export type RecurrenceRule = "daily" | "weekdays" | "weekly" | "monthly";
+export type LayoutMode = "feed" | "board" | "calendar" | "flex";
+export type ThemePreference = "dark" | "light" | "system";
+export type FontPreference = "system" | "modern" | "classic";
+
+export const SUPPORTED_TIMEZONES = [
+  "America/Phoenix",
+  "America/Los_Angeles",
+  "America/Denver",
+  "America/Chicago",
+  "America/New_York",
+  "America/Anchorage",
+  "Pacific/Honolulu",
+  "UTC",
+] as const;
 
 export interface ListItem {
   id: string;
@@ -115,6 +129,15 @@ export interface UserPreferences {
   quietStart: string | null;
   quietEnd: string | null;
   weeklyReviewDay: number;
+  viewMode: LayoutMode;
+  groupByTime: boolean;
+  compactView: boolean;
+  hideTagNav: boolean;
+  theme: ThemePreference;
+  fontFamily: FontPreference;
+  displayTimezone: (typeof SUPPORTED_TIMEZONES)[number];
+  boardTagIds: string[];
+  sortOrder: "newest" | "oldest";
 }
 
 export interface Session {

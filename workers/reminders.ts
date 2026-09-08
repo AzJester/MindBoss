@@ -43,13 +43,17 @@ function nextOccurrence(
 
 async function isQuietTime(env: Env, userId: number): Promise<boolean> {
   const row = await env.DB.prepare(
-    "SELECT quiet_start, quiet_end FROM user_preferences WHERE user_id = ?",
+    "SELECT quiet_start, quiet_end, display_timezone FROM user_preferences WHERE user_id = ?",
   )
     .bind(userId)
-    .first<{ quiet_start: string | null; quiet_end: string | null }>();
+    .first<{
+      quiet_start: string | null;
+      quiet_end: string | null;
+      display_timezone: string | null;
+    }>();
   if (!row?.quiet_start || !row.quiet_end) return false;
   const current = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Phoenix",
+    timeZone: row.display_timezone || "America/Phoenix",
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",

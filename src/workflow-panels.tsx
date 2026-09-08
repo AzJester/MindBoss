@@ -5,6 +5,7 @@ import {
   Check,
   ChevronRight,
   Clock3,
+  Globe2,
   KeyRound,
   MessageSquareText,
   Save,
@@ -12,8 +13,11 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  SunMoon,
   Trash2,
+  Type,
 } from "lucide-react";
+import { SUPPORTED_TIMEZONES } from "../shared/types";
 import type {
   Entry,
   EntryFilters,
@@ -28,7 +32,7 @@ import {
   saveSavedSearch,
   type SmsStatus,
 } from "./api";
-import { formatDateTime } from "./reminders";
+import { dateKeyForTimeZone, formatDateTime } from "./reminders";
 
 export function AdvancedSearchPanel({
   filters,
@@ -201,12 +205,15 @@ export function AdvancedSearchPanel({
   );
 }
 
-export function TodaySummary({ entries }: { entries: Entry[] }) {
+export function TodaySummary({
+  entries,
+  timeZone,
+}: {
+  entries: Entry[];
+  timeZone: string;
+}) {
   const summary = useMemo(() => {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
+    const today = dateKeyForTimeZone(new Date(), timeZone);
     const dueValues = (entry: Entry) =>
       [
         entry.reminderAt,
@@ -216,20 +223,20 @@ export function TodaySummary({ entries }: { entries: Entry[] }) {
       ].filter(Boolean) as string[];
     return {
       overdue: entries.filter((entry) =>
-        dueValues(entry).some((value) => new Date(value) < start),
+        dueValues(entry).some(
+          (value) => dateKeyForTimeZone(value, timeZone) < today,
+        ),
       ).length,
       today: entries.filter((entry) =>
-        dueValues(entry).some((value) => {
-          const date = new Date(value);
-          return date >= start && date < end;
-        }),
+        dueValues(entry).some(
+          (value) => dateKeyForTimeZone(value, timeZone) === today,
+        ),
       ).length,
-      captured: entries.filter((entry) => {
-        const date = new Date(entry.createdAt);
-        return date >= start && date < end;
-      }).length,
+      captured: entries.filter(
+        (entry) => dateKeyForTimeZone(entry.createdAt, timeZone) === today,
+      ).length,
     };
-  }, [entries]);
+  }, [entries, timeZone]);
   return (
     <div className="today-summary">
       <div>
@@ -250,10 +257,12 @@ export function TodaySummary({ entries }: { entries: Entry[] }) {
 
 export function ReviewQueue({
   entries,
+  timeZone,
   onOpen,
   onReviewLater,
 }: {
   entries: Entry[];
+  timeZone: string;
   onOpen: (entry: Entry) => void;
   onReviewLater: (entry: Entry) => void;
 }) {
@@ -310,7 +319,7 @@ export function ReviewQueue({
             <p>{entry.body.slice(0, 180)}</p>
             <small>
               {entry.reviewAt
-                ? `Review was set for ${formatDateTime(entry.reviewAt)}`
+                ? `Review was set for ${formatDateTime(entry.reviewAt, timeZone)}`
                 : `Last touched ${new Date(entry.updatedAt).toLocaleDateString()}`}
             </small>
           </button>
@@ -561,6 +570,106 @@ export function PreferencesCard({
           Changes save automatically. Quiet hours delay push delivery, never the
           reminder itself.
         </small>
+      </div>
+    </div>
+  );
+}
+
+export function AppearanceCard({
+  preferences,
+  onChange,
+}: {
+  preferences: UserPreferences;
+  onChange: (preferences: UserPreferences) => void;
+}) {
+  const update = <K extends keyof UserPreferences>(
+    key: K,
+    value: UserPreferences[K],
+  ) => onChange({ ...preferences, [key]: value });
+  return (
+    <div className="settings-card appearance-card">
+      <div className="settings-icon">
+        <SunMoon />
+      </div>
+      <div className="settings-copy">
+        <h3>Appearance and local time</h3>
+        <p>
+          These choices follow your Mind Boss account on every signed-in device.
+        </p>
+        <div className="appearance-setting">
+          <div>
+            <SunMoon size={18} />
+            <span>
+              <strong>Color theme</strong>
+              <small>Use a dark, light, or device-matched interface.</small>
+            </span>
+          </div>
+          <div className="choice-row" role="group" aria-label="Color theme">
+            {(["dark", "light", "system"] as const).map((theme) => (
+              <button
+                key={theme}
+                className={preferences.theme === theme ? "active" : ""}
+                aria-pressed={preferences.theme === theme}
+                onClick={() => update("theme", theme)}
+              >
+                {theme}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="appearance-setting">
+          <div>
+            <Type size={18} />
+            <span>
+              <strong>Dashboard font</strong>
+              <small>Choose the reading style that feels best to you.</small>
+            </span>
+          </div>
+          <div
+            className="font-choice-row"
+            role="group"
+            aria-label="Dashboard font"
+          >
+            {(["system", "modern", "classic"] as const).map((font) => (
+              <button
+                key={font}
+                className={`${font} ${preferences.fontFamily === font ? "active" : ""}`}
+                aria-pressed={preferences.fontFamily === font}
+                onClick={() => update("fontFamily", font)}
+              >
+                <span>Aa Bb 123</span>
+                <small>{font}</small>
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="appearance-setting timezone-setting">
+          <div>
+            <Globe2 size={18} />
+            <span>
+              <strong>Time zone</strong>
+              <small>
+                Controls calendars, reminder parsing, and quiet hours.
+              </small>
+            </span>
+          </div>
+          <select
+            value={preferences.displayTimezone}
+            onChange={(event) =>
+              update(
+                "displayTimezone",
+                event.target.value as UserPreferences["displayTimezone"],
+              )
+            }
+            aria-label="Time zone"
+          >
+            {SUPPORTED_TIMEZONES.map((timeZone) => (
+              <option key={timeZone} value={timeZone}>
+                {timeZone.replaceAll("_", " ")}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
     </div>
   );

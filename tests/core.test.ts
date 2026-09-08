@@ -96,6 +96,26 @@ describe("Phoenix reminders", () => {
   });
 });
 
+describe("time-zone aware reminders", () => {
+  const reference = new Date("2026-09-08T18:00:00.000Z");
+
+  it("parses, formats, and snoozes in the selected zone", () => {
+    expect(
+      parseReminder(
+        "tomorrow at 9am",
+        reference,
+        "America/New_York",
+      )?.toISOString(),
+    ).toBe("2026-09-09T13:00:00.000Z");
+    expect(
+      formatDateTime("2026-09-09T13:00:00.000Z", "America/New_York"),
+    ).toContain("9:00 AM");
+    expect(tomorrowMorning(reference, "America/New_York").toISOString()).toBe(
+      "2026-09-09T13:00:00.000Z",
+    );
+  });
+});
+
 describe("encrypted push data", () => {
   it("round-trips without exposing plaintext", async () => {
     const secret = "a-long-development-secret-with-more-than-32-characters";

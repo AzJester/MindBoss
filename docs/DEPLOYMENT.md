@@ -140,7 +140,7 @@ Do not call the release complete until all of these checks pass:
 - `GET https://mindboss.st-dba.com/api/v1/health` returns `ok: true`.
 - The custom domain certificate is valid and the OAuth callback completes.
 - An unauthorized GitHub account is rejected.
-- A note, list, recurring reminder, nested tag, trigger, saved search, attachment OCR, Today view, Review queue, archive, trash restore, import, CSV export, JSON export, and full ZIP backup work in production.
+- A note, list, recurring reminder, nested tag, trigger, saved search, attachment OCR, Today view, Review queue, board, calendar, flex layout, appearance preferences, archive, trash restore, import, CSV export, JSON export, and full ZIP backup work in production.
 - Android installation, link/text/image/PDF sharing, offline retry, and Web Push work on a real phone.
 - The unpacked extension clips a normal page and clearly rejects `chrome://` and Chrome Web Store pages.
 - If SMS is enabled, a signed message from the allowed phone number is captured, an unapproved sender is rejected, and a repeated Twilio `MessageSid` creates no duplicate.

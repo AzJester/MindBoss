@@ -26,6 +26,45 @@ for (const [name, viewport] of Object.entries({
     ).pathname.slice(1),
     fullPage: true,
   });
+  await page.getByRole("button", { name: "Cancel" }).click();
+  if (name === "desktop") {
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    const setup = page.locator(".board-setup");
+    await setup.getByRole("button", { name: "#IDEAS" }).click();
+    await setup.getByRole("button", { name: "#READ" }).click();
+    await setup.getByRole("button", { name: "Save board columns" }).click();
+    await page.screenshot({
+      path: new URL(
+        `../artifacts/qa/${name}-board.png`,
+        import.meta.url,
+      ).pathname.slice(1),
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Calendar", exact: true }).click();
+    await page.screenshot({
+      path: new URL(
+        `../artifacts/qa/${name}-calendar.png`,
+        import.meta.url,
+      ).pathname.slice(1),
+      fullPage: true,
+    });
+    await page
+      .getByRole("complementary")
+      .getByRole("button", { name: "Settings" })
+      .click();
+    await page
+      .getByRole("group", { name: "Color theme" })
+      .getByRole("button", { name: "light" })
+      .click();
+    await page.waitForTimeout(250);
+    await page.screenshot({
+      path: new URL(
+        `../artifacts/qa/${name}-appearance.png`,
+        import.meta.url,
+      ).pathname.slice(1),
+      fullPage: true,
+    });
+  }
   await page.close();
 }
 await browser.close();
