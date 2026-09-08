@@ -174,6 +174,26 @@ function Logo({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function UserAvatar({ user }: { user: Session["user"] }) {
+  const [failedUrl, setFailedUrl] = useState("");
+  const avatarUrl = user?.avatarUrl.trim() || "";
+  const showImage = Boolean(avatarUrl && failedUrl !== avatarUrl);
+  const fallback = user?.login.trim().slice(0, 1).toLocaleUpperCase() || "?";
+
+  return showImage ? (
+    <img
+      src={avatarUrl}
+      alt=""
+      referrerPolicy="no-referrer"
+      onError={() => setFailedUrl(avatarUrl)}
+    />
+  ) : (
+    <span className="avatar-fallback" aria-hidden="true">
+      {fallback}
+    </span>
+  );
+}
+
 function SignIn() {
   return (
     <main className="signin-shell">
@@ -1468,11 +1488,7 @@ function SettingsPanel({
         </div>
         <div className="settings-card account-card">
           <div className="avatar">
-            {session.user?.avatarUrl ? (
-              <img src={session.user.avatarUrl} alt="" />
-            ) : (
-              session.user?.login.slice(0, 1)
-            )}
+            <UserAvatar user={session.user} />
           </div>
           <div className="settings-copy">
             <h3>{session.user?.login}</h3>
@@ -1923,11 +1939,7 @@ export default function App() {
             onClick={() => switchView("settings")}
             aria-label="Open settings"
           >
-            {session.user?.avatarUrl ? (
-              <img src={session.user.avatarUrl} alt="" />
-            ) : (
-              session.user?.login.slice(0, 1)
-            )}
+            <UserAvatar user={session.user} />
           </button>
         </header>
         <div className="content-shell">
