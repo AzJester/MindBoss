@@ -1,4 +1,4 @@
-const CACHE = "mindboss-shell-v3";
+const CACHE = "mindboss-shell-v4";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 const DB_NAME = "mindboss-offline";
 
