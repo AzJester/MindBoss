@@ -261,7 +261,9 @@ export function ReviewQueue({
   const sameDay = (value: string) => {
     const date = new Date(value);
     return (
-      date.getMonth() === now.getMonth() && date.getDate() === now.getDate()
+      date.getFullYear() < now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate()
     );
   };
   const queue = useMemo(() => {

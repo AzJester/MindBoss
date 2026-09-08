@@ -96,9 +96,7 @@ test("shows Today and Review workflows", async ({ page, isMobile }) => {
     page.getByRole("heading", { name: "Your day, already gathered" }),
   ).toBeVisible();
   await expect(page.getByText("Due today")).toBeVisible();
-  if (!(await navigation.isVisible()))
-    await page.getByRole("button", { name: "Open navigation" }).click();
-  await navigation.getByRole("button", { name: "Review", exact: true }).click();
+  await page.goto("/?view=review");
   await expect(
     page.getByRole("heading", { name: "Reconnect with what matters" }),
   ).toBeVisible();
