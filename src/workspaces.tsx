@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { unzipSync, strFromU8 } from "fflate";
 import {
   Bell,
@@ -517,21 +517,33 @@ export function AiWorkspace({
     </section>
   );
 }
+export type TodayCategory = "overdue" | "today" | "upcoming" | "captured";
+
 export function TodayWorkspace({
   entries,
   timeZone,
   renderEntry,
+  selectedCategory,
+  onSelectCategory,
 }: {
   entries: Entry[];
   timeZone: string;
   renderEntry: (entry: Entry) => ReactNode;
+  selectedCategory: TodayCategory | null;
+  onSelectCategory: (category: TodayCategory) => void;
 }) {
   const today = dateKey(new Date(), timeZone);
-  const [section, setSection] = useState("all");
-  const groups = [
+  const tabs = useRef<Array<HTMLButtonElement | null>>([]);
+  const groups: Array<{
+    id: TodayCategory;
+    label: string;
+    empty: string;
+    items: Entry[];
+  }> = [
     {
       id: "overdue",
       label: "Overdue",
+      empty: "Nothing is overdue.",
       items: entries.filter((entry) =>
         entryDueDates(entry).some((date) => dateKey(date, timeZone) < today),
       ),
@@ -539,6 +551,7 @@ export function TodayWorkspace({
     {
       id: "today",
       label: "Due today",
+      empty: "No entries are due today.",
       items: entries.filter((entry) =>
         entryDueDates(entry).some((date) => dateKey(date, timeZone) === today),
       ),
@@ -546,6 +559,7 @@ export function TodayWorkspace({
     {
       id: "upcoming",
       label: "Upcoming",
+      empty: "No upcoming entries.",
       items: entries.filter((entry) =>
         entryDueDates(entry).some((date) => dateKey(date, timeZone) > today),
       ),
@@ -553,44 +567,72 @@ export function TodayWorkspace({
     {
       id: "captured",
       label: "Captured today",
+      empty: "No entries captured today.",
       items: entries.filter(
         (entry) => dateKey(entry.createdAt, timeZone) === today,
       ),
     },
   ];
+  const active =
+    groups.find((group) => group.id === selectedCategory) ||
+    groups.find((group) => group.items.length > 0) ||
+    groups[1];
   return (
     <div className="today-workspace">
-      <div className="today-summary">
-        {groups.map((group) => (
+      <div className="today-tabs" role="tablist" aria-label="Today categories">
+        {groups.map((group, index) => (
           <button
+            type="button"
+            role="tab"
             key={group.id}
-            aria-pressed={section === group.id}
-            onClick={() => setSection(section === group.id ? "all" : group.id)}
+            id={`today-tab-${group.id}`}
+            aria-label={`${group.label}, ${group.items.length} ${group.items.length === 1 ? "entry" : "entries"}`}
+            aria-selected={active.id === group.id}
+            aria-controls="today-results"
+            tabIndex={active.id === group.id ? 0 : -1}
+            ref={(button) => {
+              tabs.current[index] = button;
+            }}
+            onClick={() => onSelectCategory(group.id)}
+            onKeyDown={(event) => {
+              const next =
+                event.key === "ArrowRight"
+                  ? (index + 1) % groups.length
+                  : event.key === "ArrowLeft"
+                    ? (index + groups.length - 1) % groups.length
+                    : event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? groups.length - 1
+                        : -1;
+              if (next < 0) return;
+              event.preventDefault();
+              onSelectCategory(groups[next].id);
+              tabs.current[next]?.focus();
+            }}
           >
-            <strong>{group.items.length}</strong>
             <span>{group.label}</span>
-            <small>entries</small>
+            <span className="today-tab-count" aria-hidden="true">
+              {group.items.length}
+            </span>
           </button>
         ))}
       </div>
-      {groups
-        .filter((group) => section === "all" || section === group.id)
-        .map((group) => (
-          <section className="today-group" key={group.id}>
-            <header>
-              <h2>{group.label}</h2>
-              <small>
-                {group.items.length}{" "}
-                {group.items.length === 1 ? "entry" : "entries"}
-              </small>
-            </header>
-            {group.items.length ? (
-              <div className="entry-grid">{group.items.map(renderEntry)}</div>
-            ) : (
-              <p className="helper-text">Nothing here. You’re up to date.</p>
-            )}
-          </section>
-        ))}
+      <section
+        className="today-results"
+        id="today-results"
+        role="tabpanel"
+        aria-labelledby={`today-tab-${active.id}`}
+        tabIndex={0}
+      >
+        {active.items.length ? (
+          <div className="entry-grid">{active.items.map(renderEntry)}</div>
+        ) : (
+          <p className="today-empty" role="status">
+            {active.empty}
+          </p>
+        )}
+      </section>
     </div>
   );
 }

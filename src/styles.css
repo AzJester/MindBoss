@@ -2126,30 +2126,6 @@ a {
   border-left: 1px solid var(--line);
   padding: 0 8px;
 }
-.today-summary {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin: -6px 0 24px;
-}
-.today-summary > div {
-  min-height: 82px;
-  padding: 15px 17px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: linear-gradient(140deg, var(--accent-dim), var(--panel));
-  display: grid;
-}
-.today-summary strong {
-  font-size: 25px;
-  color: var(--accent-2);
-}
-.today-summary span {
-  color: var(--muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
 .review-queue {
   display: grid;
   gap: 12px;
@@ -2603,19 +2579,6 @@ a {
   .preference-grid,
   .ai-grid {
     grid-template-columns: 1fr;
-  }
-  .today-summary {
-    gap: 6px;
-  }
-  .today-summary > div {
-    min-height: 70px;
-    padding: 11px;
-  }
-  .today-summary strong {
-    font-size: 21px;
-  }
-  .today-summary span {
-    font-size: 9px;
   }
   .save-search-form {
     display: grid;

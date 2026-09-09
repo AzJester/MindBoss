@@ -145,7 +145,8 @@ test("shows Today and Review workflows", async ({ page, isMobile }) => {
   await expect(
     page.getByRole("heading", { name: "Today", level: 1 }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Due today" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /^Due today,/ })).toBeVisible();
+  await expect(page.getByRole("tabpanel")).toHaveCount(1);
   await page.goto("/?view=review");
   await expect(
     page.getByRole("heading", { name: "Review", level: 1 }),

@@ -123,6 +123,7 @@ import {
   EntryDetails,
   SyncPanel,
   TodayWorkspace,
+  type TodayCategory,
   NotificationSettings,
   RestorePanel,
 } from "./workspaces";
@@ -2325,6 +2326,9 @@ export default function App() {
       : "inbox";
   });
   const [query, setQuery] = useState("");
+  const [todayCategory, setTodayCategory] = useState<TodayCategory | null>(
+    null,
+  );
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
   const [selectedTag, setSelectedTag] = useState("");
   const [filters, setFilters] = useState<EntryFilters>({});
@@ -3118,7 +3122,7 @@ export default function App() {
                   <h1>{title}</h1>
                   <p>
                     {view === "today"
-                      ? "Overdue work, today’s reminders, and fresh captures in one place."
+                      ? "Choose a category to focus on what needs your attention."
                       : view === "review"
                         ? "Scheduled reviews, older ideas, and notes from this day in years past."
                         : view === "inbox"
@@ -3214,6 +3218,8 @@ export default function App() {
                 <TodayWorkspace
                   entries={entries}
                   timeZone={preferences.displayTimezone}
+                  selectedCategory={todayCategory}
+                  onSelectCategory={setTodayCategory}
                   renderEntry={(entry) => (
                     <EntryCard
                       key={entry.id}
