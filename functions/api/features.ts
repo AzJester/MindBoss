@@ -324,9 +324,14 @@ export async function handlePreferences(
   };
   const quietStart = quietTime(body.quietStart, existing.quietStart);
   const quietEnd = quietTime(body.quietEnd, existing.quietEnd);
+  // A legacy quiet-hours pair must not block unrelated preference edits.
+  const updatesQuietHours =
+    Object.prototype.hasOwnProperty.call(body, "quietStart") ||
+    Object.prototype.hasOwnProperty.call(body, "quietEnd");
   if (
-    Boolean(quietStart) !== Boolean(quietEnd) ||
-    (quietStart && quietStart === quietEnd)
+    updatesQuietHours &&
+    (Boolean(quietStart) !== Boolean(quietEnd) ||
+      (quietStart && quietStart === quietEnd))
   )
     throw new HttpError(
       400,

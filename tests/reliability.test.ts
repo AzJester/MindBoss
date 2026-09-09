@@ -232,6 +232,68 @@ describe("real SQLite migrations and Pages API", () => {
     expect(response.status).toBe(200);
     expect((await response.json()).entry.attachments).toHaveLength(5);
   });
+  it("saves appearance independently of legacy invalid quiet hours", async () => {
+    const { call, db } = await testDatabase();
+    await call("/preferences", "PATCH", {
+      defaultCaptureKind: "list",
+      weeklyReviewDay: 3,
+      quietStart: "21:00",
+      quietEnd: "07:00",
+    });
+    for (const [quietStart, quietEnd] of [
+      ["21:00", "21:00"],
+      ["21:00", null],
+      [null, "07:00"],
+    ]) {
+      await db
+        .prepare("UPDATE user_preferences SET quiet_start=?, quiet_end=?")
+        .run(quietStart, quietEnd);
+      for (const changes of [
+        { theme: "light" },
+        { fontFamily: "classic" },
+        { displayTimezone: "UTC" },
+        { compactView: true },
+      ]) {
+        const response = await call("/preferences", "PATCH", changes);
+        expect(response.status).toBe(200);
+        const saved = (await response.json()).preferences;
+        expect(saved).toMatchObject({
+          ...changes,
+          quietStart,
+          quietEnd,
+          defaultCaptureKind: "list",
+          weeklyReviewDay: 3,
+        });
+      }
+    }
+    const saved = (await (await call("/preferences")).json()).preferences;
+    expect(saved).toMatchObject({
+      theme: "light",
+      fontFamily: "classic",
+      displayTimezone: "UTC",
+      compactView: true,
+    });
+    for (const changes of [
+      { quietStart: "21:00", quietEnd: "21:00" },
+      { quietStart: "21:00", quietEnd: null },
+      { quietStart: null, quietEnd: "07:00" },
+    ]) {
+      const response = await call("/preferences", "PATCH", changes);
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe("quiet_hours_invalid");
+    }
+    expect(
+      (await call("/preferences", "PATCH", { quietStart: "21:00" })).status,
+    ).toBe(200);
+    expect(
+      (
+        await call("/preferences", "PATCH", {
+          quietStart: null,
+          quietEnd: null,
+        })
+      ).status,
+    ).toBe(200);
+  });
   it("validates quiet hours, CSRF and repeatable backup restore", async () => {
     const { call } = await testDatabase();
     expect(

@@ -289,9 +289,11 @@ export function ReviewQueue({
 export function PreferencesCard({
   preferences,
   onChange,
+  saving = false,
 }: {
   preferences: UserPreferences;
-  onChange: (preferences: UserPreferences) => void;
+  onChange: (changes: Partial<UserPreferences>) => void;
+  saving?: boolean;
 }) {
   const [draft, setDraft] = useState(preferences),
     [error, setError] = useState("");
@@ -307,7 +309,12 @@ export function PreferencesCard({
       return;
     }
     setError("");
-    onChange(draft);
+    onChange({
+      defaultCaptureKind: draft.defaultCaptureKind,
+      quietStart: draft.quietStart,
+      quietEnd: draft.quietEnd,
+      weeklyReviewDay: draft.weeklyReviewDay,
+    });
   };
   return (
     <section className="settings-card">
@@ -384,8 +391,8 @@ export function PreferencesCard({
         </p>
         {error && <p role="alert">{error}</p>}
         <div className="button-row">
-          <button className="primary-button" onClick={save}>
-            Save defaults
+          <button className="primary-button" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save defaults"}
           </button>
           <button
             className="secondary-button"
@@ -404,14 +411,20 @@ export function PreferencesCard({
 export function AppearanceCard({
   preferences,
   onChange,
+  saving,
+  saved,
+  saveError,
 }: {
   preferences: UserPreferences;
-  onChange: (preferences: UserPreferences) => void;
+  onChange: (changes: Partial<UserPreferences>) => void;
+  saving: boolean;
+  saved: boolean;
+  saveError: string;
 }) {
   const update = <K extends keyof UserPreferences>(
     key: K,
     value: UserPreferences[K],
-  ) => onChange({ ...preferences, [key]: value });
+  ) => onChange({ [key]: value });
   return (
     <div className="settings-card appearance-card">
       <div className="settings-icon">
@@ -433,7 +446,9 @@ export function AppearanceCard({
           <div className="choice-row" role="group" aria-label="Color theme">
             {(["dark", "light", "system"] as const).map((theme) => (
               <button
+                type="button"
                 key={theme}
+                disabled={saving}
                 className={preferences.theme === theme ? "active" : ""}
                 aria-pressed={preferences.theme === theme}
                 onClick={() => update("theme", theme)}
@@ -458,7 +473,9 @@ export function AppearanceCard({
           >
             {(["system", "modern", "classic"] as const).map((font) => (
               <button
+                type="button"
                 key={font}
+                disabled={saving}
                 className={`${font} ${preferences.fontFamily === font ? "active" : ""}`}
                 aria-pressed={preferences.fontFamily === font}
                 onClick={() => update("fontFamily", font)}
@@ -481,6 +498,7 @@ export function AppearanceCard({
           </div>
           <select
             value={preferences.displayTimezone}
+            disabled={saving}
             onChange={(event) =>
               update(
                 "displayTimezone",
@@ -496,6 +514,18 @@ export function AppearanceCard({
             ))}
           </select>
         </label>
+        <div className="preference-save-feedback">
+          {saveError && <p role="alert">{saveError}</p>}
+          <p role="status" aria-live="polite">
+            {saving
+              ? "Saving your choice…"
+              : saveError
+                ? "Choose an option to try again."
+                : saved
+                  ? "Saved to your account."
+                  : "Changes save automatically."}
+          </p>
+        </div>
       </div>
     </div>
   );

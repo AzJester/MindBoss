@@ -1927,6 +1927,10 @@ function SettingsPanel({
   const [section, setSection] = useState("account"),
     [clipToken, setClipToken] = useState(""),
     [backupBusy, setBackupBusy] = useState(false);
+  const [savingPreferences, setSavingPreferences] = useState(false);
+  const [preferencesSaved, setPreferencesSaved] = useState(false);
+  const [preferencesError, setPreferencesError] = useState("");
+  const preferenceSavePending = useRef(false);
   const [stats, setStats] = useState<LibraryStats | null>(null),
     [error, setError] = useState("");
   const [tokens, setTokens] = useState<
@@ -1968,14 +1972,27 @@ function SettingsPanel({
     }
     loadTokens();
   }, []);
-  const updatePreferences = async (next: UserPreferences) => {
+  const updatePreferences = async (changes: Partial<UserPreferences>) => {
+    if (preferenceSavePending.current) return;
+    preferenceSavePending.current = true;
+    setSavingPreferences(true);
+    setPreferencesSaved(false);
+    setPreferencesError("");
     try {
-      onPreferencesChange(await savePreferences(next));
-      notify("Settings saved to your account.");
+      onPreferencesChange(await savePreferences(changes));
+      setPreferencesSaved(true);
+      if (section !== "appearance") notify("Settings saved to your account.");
     } catch (error) {
-      notify(
-        error instanceof Error ? error.message : "Could not save settings.",
-      );
+      const message =
+        (section === "appearance"
+          ? "Could not save this change. Your previous setting is still selected. "
+          : "Could not save settings. ") +
+        (error instanceof Error ? error.message : "Please try again.");
+      setPreferencesError(message);
+      if (section !== "appearance") notify(message);
+    } finally {
+      preferenceSavePending.current = false;
+      setSavingPreferences(false);
     }
   };
   return (
@@ -2072,6 +2089,9 @@ function SettingsPanel({
           <AppearanceCard
             preferences={preferences}
             onChange={(next) => void updatePreferences(next)}
+            saving={savingPreferences}
+            saved={preferencesSaved}
+            saveError={preferencesError}
           />
         )}
         {section === "notifications" && (
@@ -2080,6 +2100,7 @@ function SettingsPanel({
             <PreferencesCard
               preferences={preferences}
               onChange={(next) => void updatePreferences(next)}
+              saving={savingPreferences}
             />
           </>
         )}
