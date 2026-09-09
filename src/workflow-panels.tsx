@@ -33,7 +33,7 @@ import {
   type AiStatus,
   type SmsStatus,
 } from "./api";
-import { dateKeyForTimeZone, formatDateTime } from "./reminders";
+import { formatDateTime } from "./reminders";
 
 export function AdvancedSearchPanel({
   filters,
@@ -203,56 +203,6 @@ export function AdvancedSearchPanel({
         </form>
       </div>
     </details>
-  );
-}
-
-export function TodaySummary({
-  entries,
-  timeZone,
-}: {
-  entries: Entry[];
-  timeZone: string;
-}) {
-  const summary = useMemo(() => {
-    const today = dateKeyForTimeZone(new Date(), timeZone);
-    const dueValues = (entry: Entry) =>
-      [
-        entry.reminderAt,
-        ...entry.listItems
-          .filter((item) => !item.completedAt)
-          .map((item) => item.dueAt),
-      ].filter(Boolean) as string[];
-    return {
-      overdue: entries.filter((entry) =>
-        dueValues(entry).some(
-          (value) => dateKeyForTimeZone(value, timeZone) < today,
-        ),
-      ).length,
-      today: entries.filter((entry) =>
-        dueValues(entry).some(
-          (value) => dateKeyForTimeZone(value, timeZone) === today,
-        ),
-      ).length,
-      captured: entries.filter(
-        (entry) => dateKeyForTimeZone(entry.createdAt, timeZone) === today,
-      ).length,
-    };
-  }, [entries, timeZone]);
-  return (
-    <div className="today-summary">
-      <div>
-        <strong>{summary.overdue}</strong>
-        <span>Overdue</span>
-      </div>
-      <div>
-        <strong>{summary.today}</strong>
-        <span>Due today</span>
-      </div>
-      <div>
-        <strong>{summary.captured}</strong>
-        <span>Captured today</span>
-      </div>
-    </div>
   );
 }
 
